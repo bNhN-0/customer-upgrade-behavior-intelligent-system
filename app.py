@@ -26,11 +26,12 @@ def get_db():
 db = get_db()
 TARGET_COLLECTION = "apple_upgrade_predictions"
 
-# ---------------- MODEL LOGIC (REDESIGNED 3-LAYER) ----------------
+# ---------------- MODEL LOGIC (CLEAN v2 — NO SCALING) ----------------
+
 def compute_behaviorals(DA, BH, TI, ENG, PU, SI, PS):
     """
-    Layer 1: Behavioral extraction (ONLY feeds Layer 2)
-    Returns Need (N), Bonding (B), Hesitation (H)
+    Layer 1: Behavioral Extraction
+    7 inputs -> (Need, Bonding, Hesitation)
     """
     N = (DA + TI + ENG + PU + SI) / 5.0
     B = (ENG + PU + SI) / 3.0
@@ -51,12 +52,13 @@ def _softmax(x, beta=2.0):
 
 def compute_persona(DA, BH, TI, ENG, PU, SI, PS):
     """
-    Layer 2: Personas computed from Layer 1
+    Layer 2: Persona Mapping
+    (N,B,H) -> persona scores -> persona weights -> (C,V)
     Returns:
-      dominant persona (string),
-      raw persona scores (dict),
-      persona weights p (dict),
-      Commitment C,
+      dominant persona (string)
+      raw persona scores (dict)
+      persona weights (dict)
+      Commitment C
       Volatility V
     """
     N, B, H = compute_behaviorals(DA, BH, TI, ENG, PU, SI, PS)
@@ -75,13 +77,11 @@ def compute_persona(DA, BH, TI, ENG, PU, SI, PS):
 
     order = ["Loyalist", "Fan", "Switcher", "Drifter"]
     vec = [scores[k] for k in order]
-    w = _softmax(vec, beta=2.0)  # persona weights
-
-    weights = dict(zip(order, w))
-
-    # Meta-signals for Layer 3
-    C = weights["Loyalist"] + weights["Fan"]          # Commitment
-    V = weights["Switcher"] + weights["Drifter"]      # Volatility (= 1 - C)
+    weights = dict(zip(order, _softmax(vec, beta=2.0)))
+    
+    
+    C = weights["Loyalist"] + weights["Fan"]       # Commitment
+    V = weights["Switcher"] + weights["Drifter"]   # Volatility (= 1 - C)
 
     dominant = max(scores, key=scores.get)
     return dominant, scores, weights, C, V
@@ -89,39 +89,36 @@ def compute_persona(DA, BH, TI, ENG, PU, SI, PS):
 
 def compute_forcing_term(DA, BH, TI, ENG, PU, SI, PS):
     """
-    Layer 3: Forcing term depends ONLY on Layer 2 personas,
-             not directly on N,B,H.
+    Layer 3: Forcing Term Dynamics (persona-driven)
+    Uses ONLY (C,V) from Layer 2.
+    No scaling of alpha/omega/eta.
     """
     dt = 0.01
     t = 800
 
-    # ---- Layer 2 outputs ----
-    _, _, weights, C, V = compute_persona(DA, BH, TI, ENG, PU, SI, PS)
+    alpha = 0.7
+    omega = 0.5
+    eta   = 0.9
 
-    # ---- Persona-adjusted coefficients ----
-    alpha0 = 0.7
-    omega0 = 0.5
-    eta0   = 0.9
+    # Layer 2 output
+    _, _, _, C, V = compute_persona(DA, BH, TI, ENG, PU, SI, PS)
 
-    alpha = alpha0 * (0.5 + 0.5 * C)
-    omega = omega0 * (0.5 + 0.5 * C)
-    eta   = eta0   * (0.6 + 0.4 * C)
+    forcing = np.zeros(t)
 
-    forcing_term = np.zeros(t)
-
-    # Initial value biased by personas
-    forcing_term[0] = 0.1 + 0.3 * C - 0.2 * V
-    forcing_term[0] = float(np.clip(forcing_term[0], 0, 1))
+    # Persona-driven initial pressure
+    forcing[0] = np.clip(0.1 + 0.3*C - 0.2*V, 0, 1)
 
     for k in range(1, t):
-        # Persona-driven state
+        #Upgrade Pressure
         X = alpha * C - (1 - alpha) * V
+        #Hesitation Impact
         Y = omega * V
+        #Output Short term
         S = X * (1 - Y)
 
-        forcing_term[k] = forcing_term[k - 1] + eta * (S - forcing_term[k - 1]) * dt
+        forcing[k] = forcing[k-1] + eta * (S - forcing[k-1]) * dt
 
-    return float(forcing_term[-1])
+    return float(forcing[-1])
 
 
 def classify_forcing_term(value: float) -> str:
@@ -132,7 +129,6 @@ def classify_forcing_term(value: float) -> str:
         return "Delay Upgrade"
     else:
         return "Churn Risk"
-
 
 # ---------------- DATA LOADING ----------------
 @st.cache_data
@@ -164,7 +160,7 @@ def load_data_from_firestore():
 
     personas, score_list, Ns, Bs, Hs = [], [], [], [], []
     for _, r in df.iterrows():
-        p, scores, _, _, _ = compute_persona(r.DA, r.BH, r.TI, r.ENG, r.PU, r.SI, r.PS)
+        p, scores = compute_persona(r.DA, r.BH, r.TI, r.ENG, r.PU, r.SI, r.PS)
         personas.append(p)
         score_list.append(scores)
 
@@ -215,7 +211,7 @@ with tab_loader:
     st.markdown(
         """
         Upload your raw CSV and we will:
-        - compute forcing_term (Layer 3, persona-driven)
+        - compute forcing_term
         - classify decision
         - compute persona + persona_scores
         - save into Firestore
@@ -250,25 +246,15 @@ with tab_loader:
                             ft = round(ft_raw, 3)
                             decision = classify_forcing_term(ft)
 
-                            dominant, scores, weights, C, V = compute_persona(DA, BH, TI, ENG, PU, SI, PS)
+                            dominant, scores = compute_persona(DA, BH, TI, ENG, PU, SI, PS)
 
                             out_doc = {
                                 "DA": DA, "BH": BH, "TI": TI, "ENG": ENG,
                                 "PU": PU, "SI": SI, "PS": PS,
-
-                                "Need": compute_behaviorals(DA, BH, TI, ENG, PU, SI, PS)[0],
-                                "Bonding": compute_behaviorals(DA, BH, TI, ENG, PU, SI, PS)[1],
-                                "Hesitation": compute_behaviorals(DA, BH, TI, ENG, PU, SI, PS)[2],
-
                                 "forcing_term": ft,
                                 "decision": decision,
-
                                 "persona": dominant,
                                 "persona_scores": scores,
-                                "persona_weights": weights,
-                                "Commitment": C,
-                                "Volatility": V,
-
                                 "source_id": user_id,
                                 "created_at": firestore.SERVER_TIMESTAMP,
                             }
@@ -400,7 +386,7 @@ with tab_persona:
         persona_means = persona_means.reindex(persona_options)
 
         st.bar_chart(persona_means[["Need","Bonding","Hesitation"]], use_container_width=True)
-        st.caption("Need ↑ and Bonding ↑ influence personas, which drive forcing term.")
+        st.caption("Need ↑ and Bonding ↑ push toward Upgrade. Hesitation ↑ pushes toward Delay/Churn.")
 
     st.markdown("---")
     st.markdown("**Mean forcing term by persona**")
