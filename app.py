@@ -18,7 +18,6 @@ st.set_page_config(
 def get_db():
     """Initialize Firebase Admin only once."""
     if not firebase_admin._apps:
-        # Use Streamlit secrets for safest deployment
         firebase_creds = dict(st.secrets["firebase"])
         cred = credentials.Certificate(firebase_creds)
         firebase_admin.initialize_app(cred)
@@ -29,12 +28,8 @@ TARGET_COLLECTION = "apple_upgrade_predictions"
 
 # ---------------- MODEL LOGIC ----------------
 def compute_behaviorals(DA, BH, TI, ENG, PU, SI, PS):
-    """Compute behavioral signals exactly like your code."""
-    # Need
     N = (DA + TI + ENG + PU + SI) / 5.0
-    # Bonding
     B = (ENG + PU + SI) / 3.0
-    # Hesitation
     H = (
         (1 - DA) + BH + (1 - TI) + (1 - ENG) +
         (1 - PU) + (1 - SI) + PS * (1 - TI)
@@ -43,13 +38,6 @@ def compute_behaviorals(DA, BH, TI, ENG, PU, SI, PS):
 
 
 def compute_persona(DA, BH, TI, ENG, PU, SI, PS):
-    """
-    Persona weights based on your project logic:
-    Loyalist needs + bonding, low hesitation
-    Fan strong bonding, low hesitation
-    Switcher high hesitation dominates
-    Drifter hesitation dominates, low need/bonding
-    """
     N, B, H = compute_behaviorals(DA, BH, TI, ENG, PU, SI, PS)
 
     H1_loyalist = 0.6 * N + 0.3 * B - 0.5 * H
@@ -68,7 +56,6 @@ def compute_persona(DA, BH, TI, ENG, PU, SI, PS):
 
 
 def compute_forcing_term(DA, BH, TI, ENG, PU, SI, PS):
-    """Your corrected forcing-term model."""
     dt = 0.01
     eta = 0.9
     alpha = 0.7
@@ -114,8 +101,7 @@ def load_data_from_firestore():
     rows = []
     for doc in docs:
         d = doc.to_dict()
-
-        row = {
+        rows.append({
             "id": d.get("source_id", doc.id),
             "DA": d.get("DA"),
             "BH": d.get("BH"),
@@ -127,8 +113,7 @@ def load_data_from_firestore():
             "forcing_term": d.get("forcing_term"),
             "decision": d.get("decision"),
             "created_at": d.get("created_at"),
-        }
-        rows.append(row)
+        })
 
     if not rows:
         return pd.DataFrame()
@@ -137,11 +122,7 @@ def load_data_from_firestore():
     df["forcing_term"] = pd.to_numeric(df["forcing_term"], errors="coerce")
     df = df.dropna(subset=["forcing_term"])
 
-    # persona columns computed fresh for dashboard
-    personas = []
-    score_list = []
-    Ns, Bs, Hs = [], [], []
-
+    personas, score_list, Ns, Bs, Hs = [], [], [], [], []
     for _, r in df.iterrows():
         p, scores = compute_persona(r.DA, r.BH, r.TI, r.ENG, r.PU, r.SI, r.PS)
         personas.append(p)
@@ -175,7 +156,6 @@ st.markdown(
 st.title("🍏 Apple Upgrade Prediction Dashboard")
 st.caption("Firestore → Persona & Forcing Term Insights")
 
-# Sidebar refresh
 with st.sidebar:
     st.markdown("### Data controls")
     if st.button("Refresh Firestore"):
@@ -188,14 +168,81 @@ tabs = st.tabs(["📊 Overview", "🧠 Persona Insights", "👤 User Explorer", 
 tab_overview, tab_persona, tab_user, tab_loader = tabs
 
 
-# ---------------- EMPTY STATE ----------------
+# ===================== TAB 4: DATA LOADER (ALWAYS VISIBLE) =====================
+with tab_loader:
+    st.subheader("CSV → Compute → Save to Firestore")
+
+    st.markdown(
+        """
+        Upload your raw CSV and we will:
+        - compute forcing_term
+        - classify decision
+        - compute persona + persona_scores
+        - save into Firestore
+        
+        Required columns:
+        `id, DA, BH, TI, ENG, PU, SI, PS`
+        """
+    )
+
+    uploaded = st.file_uploader("Upload CSV", type=["csv"])
+
+    if uploaded:
+        raw_df = pd.read_csv(uploaded)
+        st.write("Preview:")
+        st.dataframe(raw_df.head())
+
+        required_cols = ["id", "DA", "BH", "TI", "ENG", "PU", "SI", "PS"]
+        missing = [c for c in required_cols if c not in raw_df.columns]
+
+        if missing:
+            st.error(f"Missing required columns: {missing}")
+        else:
+            if st.button("Compute & Save"):
+                ok = 0
+                with st.spinner("Computing + saving..."):
+                    for _, r in raw_df.iterrows():
+                        try:
+                            user_id = str(r["id"])
+                            DA, BH, TI, ENG, PU, SI, PS = map(float, [r.DA, r.BH, r.TI, r.ENG, r.PU, r.SI, r.PS])
+
+                            ft_raw = compute_forcing_term(DA, BH, TI, ENG, PU, SI, PS)
+                            ft = round(ft_raw, 3)
+                            decision = classify_forcing_term(ft)
+
+                            dominant, scores = compute_persona(DA, BH, TI, ENG, PU, SI, PS)
+
+                            out_doc = {
+                                "DA": DA, "BH": BH, "TI": TI, "ENG": ENG,
+                                "PU": PU, "SI": SI, "PS": PS,
+                                "forcing_term": ft,
+                                "decision": decision,
+                                "persona": dominant,
+                                "persona_scores": scores,
+                                "source_id": user_id,
+                                "created_at": firestore.SERVER_TIMESTAMP,
+                            }
+
+                            db.collection(TARGET_COLLECTION).document(user_id).set(out_doc)
+                            ok += 1
+                        except Exception as e:
+                            st.warning(f"Skipped row {r.get('id','?')} due to {e}")
+
+                load_data_from_firestore.clear()
+                st.success(f"Saved {ok} users to Firestore.")
+                st.info("Go to Overview / Persona tabs to explore.")
+    else:
+        st.info("Upload a CSV to compute and push results.")
+
+
+# ===================== IF NO DATA YET: SHOW MESSAGES, DON'T STOP APP =====================
 if df.empty:
     with tab_overview:
-        st.warning("No computed documents found yet. Upload + compute using Data Loader.")
+        st.warning("No computed documents found yet. Use Data Loader tab to upload CSV.")
     with tab_persona:
-        st.info("Persona insights appear once data exists.")
+        st.info("Persona insights will appear after CSV upload.")
     with tab_user:
-        st.info("User explorer appears once data exists.")
+        st.info("User explorer will appear after CSV upload.")
     st.stop()
 
 
@@ -252,7 +299,6 @@ with k1: st.metric("Users (filtered)", total_users)
 with k2: st.metric("Avg forcing term", f"{avg_forcing:.3f}")
 with k3: st.metric("Upgrade Soon", f"{upgrade_rate:.1f}%")
 with k4: st.metric("Delay Upgrade", f"{delay_rate:.1f}%")
-
 st.write(f"**Churn Risk:** {churn_count} users ({churn_rate:.1f}%)")
 st.markdown("---")
 
@@ -260,70 +306,55 @@ st.markdown("---")
 # ===================== TAB 1: OVERVIEW =====================
 with tab_overview:
     st.subheader("Forcing term overview")
-
     c1, c2 = st.columns([2, 1])
 
     with c1:
         st.markdown("**Forcing term by user (sorted)**")
-        if filtered_df.empty:
-            st.info("No users match current filters.")
-        else:
-            line_df = filtered_df.sort_values("forcing_term").set_index("id")[["forcing_term"]]
-            st.line_chart(line_df)
+        line_df = filtered_df.sort_values("forcing_term").set_index("id")[["forcing_term"]]
+        st.line_chart(line_df)
 
     with c2:
         st.markdown("**Decision breakdown**")
-        if not filtered_df.empty:
-            decision_counts = filtered_df["decision"].value_counts().reindex(decision_options, fill_value=0)
-            fig, ax = plt.subplots()
-            ax.pie(decision_counts.values, labels=decision_counts.index, autopct="%1.0f%%", startangle=90)
-            ax.axis("equal")
-            st.pyplot(fig)
-        else:
-            st.info("No data.")
+        decision_counts = filtered_df["decision"].value_counts().reindex(decision_options, fill_value=0)
+        fig, ax = plt.subplots()
+        ax.pie(decision_counts.values, labels=decision_counts.index, autopct="%1.0f%%", startangle=90)
+        ax.axis("equal")
+        st.pyplot(fig)
 
     st.markdown("**Forcing term distribution**")
-    if not filtered_df.empty:
-        arr = filtered_df["forcing_term"].to_numpy()
-        fig_hist, ax_hist = plt.subplots()
-        ax_hist.hist(arr, bins=10, edgecolor="black")
-        ax_hist.set_xlabel("Forcing term")
-        ax_hist.set_ylabel("Frequency")
-        st.pyplot(fig_hist)
+    arr = filtered_df["forcing_term"].to_numpy()
+    fig_hist, ax_hist = plt.subplots()
+    ax_hist.hist(arr, bins=10, edgecolor="black")
+    ax_hist.set_xlabel("Forcing term")
+    ax_hist.set_ylabel("Frequency")
+    st.pyplot(fig_hist)
 
 
 # ===================== TAB 2: PERSONA INSIGHTS =====================
 with tab_persona:
     st.subheader("Persona Insights")
 
-    if filtered_df.empty:
-        st.info("No users match current filters.")
-    else:
-        p_counts = filtered_df["persona"].value_counts().reindex(persona_options, fill_value=0)
+    p_counts = filtered_df["persona"].value_counts().reindex(persona_options, fill_value=0)
+    c1, c2 = st.columns([1.2, 2])
 
-        c1, c2 = st.columns([1.2, 2])
+    with c1:
+        st.markdown("**Persona distribution**")
+        figp, axp = plt.subplots()
+        axp.pie(p_counts.values, labels=p_counts.index, autopct="%1.0f%%", startangle=90)
+        axp.axis("equal")
+        st.pyplot(figp)
 
-        with c1:
-            st.markdown("**Persona distribution**")
-            figp, axp = plt.subplots()
-            axp.pie(p_counts.values, labels=p_counts.index, autopct="%1.0f%%", startangle=90)
-            axp.axis("equal")
-            st.pyplot(figp)
+    with c2:
+        st.markdown("**Average behaviorals per persona**")
+        persona_means = filtered_df.groupby("persona")[["Need","Bonding","Hesitation","forcing_term"]].mean()
+        persona_means = persona_means.reindex(persona_options)
 
-        with c2:
-            st.markdown("**Average behaviorals per persona**")
+        st.bar_chart(persona_means[["Need","Bonding","Hesitation"]], use_container_width=True)
+        st.caption("Need ↑ and Bonding ↑ push toward Upgrade. Hesitation ↑ pushes toward Delay/Churn.")
 
-            persona_means = filtered_df.groupby("persona")[["Need","Bonding","Hesitation","forcing_term"]].mean()
-            persona_means = persona_means.reindex(persona_options)
-
-            # Clean bar view instead of table
-            st.bar_chart(persona_means[["Need","Bonding","Hesitation"]], use_container_width=True)
-
-            st.caption("Need ↑ and Bonding ↑ push toward Upgrade. Hesitation ↑ pushes toward Delay/Churn.")
-
-        st.markdown("---")
-        st.markdown("**Mean forcing term by persona**")
-        st.bar_chart(persona_means[["forcing_term"]], use_container_width=True)
+    st.markdown("---")
+    st.markdown("**Mean forcing term by persona**")
+    st.bar_chart(persona_means[["forcing_term"]], use_container_width=True)
 
 
 # ===================== TAB 3: USER EXPLORER =====================
@@ -331,7 +362,6 @@ def radar_chart(scores_dict, title="Persona Radar"):
     labels = list(scores_dict.keys())
     values = list(scores_dict.values())
 
-    # close loop
     values += values[:1]
     angles = np.linspace(0, 2*np.pi, len(labels), endpoint=False).tolist()
     angles += angles[:1]
@@ -348,94 +378,29 @@ def radar_chart(scores_dict, title="Persona Radar"):
 with tab_user:
     st.subheader("User Explorer")
 
-    if filtered_df.empty:
-        st.info("No users match current filters.")
-    else:
-        selected_user_id = st.selectbox(
-            "Select user ID",
-            options=filtered_df["id"].tolist()
-        )
-
-        user_row = filtered_df[filtered_df["id"] == selected_user_id].iloc[0]
-        persona = user_row["persona"]
-        scores  = user_row["persona_scores"]
-
-        left, right = st.columns([1, 1.2])
-
-        with left:
-            st.markdown(f"**Decision:** {user_row['decision']}")
-            st.markdown(f"**Forcing term:** `{user_row['forcing_term']:.3f}`")
-            st.markdown(f"**Persona:** **{persona}**")
-
-            # quick behavioral bars
-            beh_df = pd.DataFrame({
-                "Factor": ["Need", "Bonding", "Hesitation"],
-                "Value": [user_row["Need"], user_row["Bonding"], user_row["Hesitation"]]
-            })
-            st.bar_chart(beh_df, x="Factor", y="Value", use_container_width=True)
-
-        with right:
-            st.markdown("**Persona radar scores (H1–H4)**")
-            fig = radar_chart(scores, title=f"{persona} Profile")
-            st.pyplot(fig)
-
-
-# ===================== TAB 4: DATA LOADER =====================
-with tab_loader:
-    st.subheader("CSV → Compute → Save to Firestore")
-
-    st.markdown(
-        """
-        Upload your raw CSV and we will:
-        - compute forcing_term
-        - classify decision
-        - compute persona + persona_scores
-        - save into Firestore
-        
-        Required columns:
-        `id, DA, BH, TI, ENG, PU, SI, PS`
-        """
+    selected_user_id = st.selectbox(
+        "Select user ID",
+        options=filtered_df["id"].tolist()
     )
 
-    uploaded = st.file_uploader("Upload CSV", type=["csv"])
-    if uploaded:
-        raw_df = pd.read_csv(uploaded)
-        st.write("Preview:")
-        st.dataframe(raw_df.head())
+    user_row = filtered_df[filtered_df["id"] == selected_user_id].iloc[0]
+    persona = user_row["persona"]
+    scores  = user_row["persona_scores"]
 
-        required_cols = ["id","DA","BH","TI","ENG","PU","SI","PS"]
-        missing = [c for c in required_cols if c not in raw_df.columns]
+    left, right = st.columns([1, 1.2])
 
-        if missing:
-            st.error(f"Missing required columns: {missing}")
-        else:
-            if st.button("Compute & Save"):
-                ok = 0
-                with st.spinner("Computing + saving..."):
-                    for _, r in raw_df.iterrows():
-                        user_id = str(r["id"])
-                        DA,BH,TI,ENG,PU,SI,PS = map(float, [r.DA,r.BH,r.TI,r.ENG,r.PU,r.SI,r.PS])
+    with left:
+        st.markdown(f"**Decision:** {user_row['decision']}")
+        st.markdown(f"**Forcing term:** `{user_row['forcing_term']:.3f}`")
+        st.markdown(f"**Persona:** **{persona}**")
 
-                        ft_raw = compute_forcing_term(DA,BH,TI,ENG,PU,SI,PS)
-                        ft = round(ft_raw,3)
-                        decision = classify_forcing_term(ft)
+        beh_df = pd.DataFrame({
+            "Factor": ["Need", "Bonding", "Hesitation"],
+            "Value": [user_row["Need"], user_row["Bonding"], user_row["Hesitation"]]
+        })
+        st.bar_chart(beh_df, x="Factor", y="Value", use_container_width=True)
 
-                        dominant, scores = compute_persona(DA,BH,TI,ENG,PU,SI,PS)
-
-                        out_doc = {
-                            "DA": DA,"BH": BH,"TI": TI,"ENG": ENG,
-                            "PU": PU,"SI": SI,"PS": PS,
-                            "forcing_term": ft,
-                            "decision": decision,
-                            "persona": dominant,
-                            "persona_scores": scores,
-                            "source_id": user_id,
-                            "created_at": firestore.SERVER_TIMESTAMP,
-                        }
-
-                        db.collection(TARGET_COLLECTION).document(user_id).set(out_doc)
-                        ok += 1
-
-                load_data_from_firestore.clear()
-                st.success(f"Saved {ok} users to Firestore.")
-                st.info("Go to Overview / Persona tabs to explore.")
+    with right:
+        st.markdown("**Persona radar scores (H1–H4)**")
+        fig = radar_chart(scores, title=f"{persona} Profile")
+        st.pyplot(fig)
