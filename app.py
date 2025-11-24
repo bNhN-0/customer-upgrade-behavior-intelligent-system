@@ -78,8 +78,7 @@ def compute_persona(DA, BH, TI, ENG, PU, SI, PS):
     order = ["Loyalist", "Fan", "Switcher", "Drifter"]
     vec = [scores[k] for k in order]
     weights = dict(zip(order, _softmax(vec, beta=2.0)))
-    
-    
+
     C = weights["Loyalist"] + weights["Fan"]       # Commitment
     V = weights["Switcher"] + weights["Drifter"]   # Volatility (= 1 - C)
 
@@ -100,7 +99,7 @@ def compute_forcing_term(DA, BH, TI, ENG, PU, SI, PS):
     omega = 0.5
     eta   = 0.9
 
-    # Layer 2 output
+    # Layer 2 output (ignore first 3 returns)
     _, _, _, C, V = compute_persona(DA, BH, TI, ENG, PU, SI, PS)
 
     forcing = np.zeros(t)
@@ -109,11 +108,11 @@ def compute_forcing_term(DA, BH, TI, ENG, PU, SI, PS):
     forcing[0] = np.clip(0.1 + 0.3*C - 0.2*V, 0, 1)
 
     for k in range(1, t):
-        #Upgrade Pressure
+        # Upgrade Pressure
         X = alpha * C - (1 - alpha) * V
-        #Hesitation Impact
+        # Hesitation Impact
         Y = omega * V
-        #Output Short term
+        # Effective Upgrade Signal
         S = X * (1 - Y)
 
         forcing[k] = forcing[k-1] + eta * (S - forcing[k-1]) * dt
@@ -129,6 +128,7 @@ def classify_forcing_term(value: float) -> str:
         return "Delay Upgrade"
     else:
         return "Churn Risk"
+
 
 # ---------------- DATA LOADING ----------------
 @st.cache_data
@@ -160,11 +160,16 @@ def load_data_from_firestore():
 
     personas, score_list, Ns, Bs, Hs = [], [], [], [], []
     for _, r in df.iterrows():
-        p, scores = compute_persona(r.DA, r.BH, r.TI, r.ENG, r.PU, r.SI, r.PS)
+        # FIX: compute_persona returns 5 values now
+        p, scores, _, _, _ = compute_persona(
+            r.DA, r.BH, r.TI, r.ENG, r.PU, r.SI, r.PS
+        )
         personas.append(p)
         score_list.append(scores)
 
-        N, B, H = compute_behaviorals(r.DA, r.BH, r.TI, r.ENG, r.PU, r.SI, r.PS)
+        N, B, H = compute_behaviorals(
+            r.DA, r.BH, r.TI, r.ENG, r.PU, r.SI, r.PS
+        )
         Ns.append(N); Bs.append(B); Hs.append(H)
 
     df["persona"] = personas
@@ -215,7 +220,7 @@ with tab_loader:
         - classify decision
         - compute persona + persona_scores
         - save into Firestore
-        
+
         Required columns:
         `id, DA, BH, TI, ENG, PU, SI, PS`
         """
@@ -240,13 +245,18 @@ with tab_loader:
                     for _, r in raw_df.iterrows():
                         try:
                             user_id = str(r["id"])
-                            DA, BH, TI, ENG, PU, SI, PS = map(float, [r.DA, r.BH, r.TI, r.ENG, r.PU, r.SI, r.PS])
+                            DA, BH, TI, ENG, PU, SI, PS = map(
+                                float, [r.DA, r.BH, r.TI, r.ENG, r.PU, r.SI, r.PS]
+                            )
 
                             ft_raw = compute_forcing_term(DA, BH, TI, ENG, PU, SI, PS)
                             ft = round(ft_raw, 3)
                             decision = classify_forcing_term(ft)
 
-                            dominant, scores = compute_persona(DA, BH, TI, ENG, PU, SI, PS)
+                            # FIX: compute_persona returns 5 values now
+                            dominant, scores, _, _, _ = compute_persona(
+                                DA, BH, TI, ENG, PU, SI, PS
+                            )
 
                             out_doc = {
                                 "DA": DA, "BH": BH, "TI": TI, "ENG": ENG,
