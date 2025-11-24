@@ -26,7 +26,7 @@ def get_db():
 db = get_db()
 TARGET_COLLECTION = "apple_upgrade_predictions"
 
-# ---------------- MODEL LOGIC (OPTIMIZED v4 — FAN vs LOYALIST FIX) ----------------
+# ---------------- MODEL LOGIC  ----------------
 
 def compute_behaviorals(DA, BH, TI, ENG, PU, SI, PS):
     N = (DA + TI + ENG + PU + SI) / 5.0
@@ -39,11 +39,7 @@ def compute_behaviorals(DA, BH, TI, ENG, PU, SI, PS):
 
 
 def _softmax(x, beta=3.5):
-    """
-    Slightly less sharp than beta=4.
-    Still distinct, but reduces tiny raw-score advantages
-    that were flipping Fans into Loyalists.
-    """
+
     x = np.array(x, dtype=float) * beta
     x = x - np.max(x)
     e = np.exp(x)
@@ -51,23 +47,11 @@ def _softmax(x, beta=3.5):
 
 
 def compute_persona(DA, BH, TI, ENG, PU, SI, PS):
-    """
-    Layer 2 optimized:
-    - Loyalist depends MORE on Need (upgrade necessity)
-    - Fan depends MORE on Bonding (love/ecosystem)
-    - Loyalist depends LESS on Bonding so it doesn't steal Fans
-    - Dominant persona chosen by weights (softmax), not raw scores
-    """
+ 
     N, B, H = compute_behaviorals(DA, BH, TI, ENG, PU, SI, PS)
 
-    # ---- OPTIMIZED Persona Equations ----
-    # Loyalist: strong Need + some Bonding, but not too much Bonding dominance
     H1_loyalist = 0.90 * N + 0.25 * B - 0.70 * H
-
-    # Fan: Bonding-heavy, only light Need contribution
     H2_fan      = 0.95 * B + 0.15 * N - 0.45 * H
-
-    # Switcher / Drifter unchanged (already separating well)
     H3_switcher = 0.80 * H - 0.20 * B + 0.05 * N
     H4_drifter  = 1.10 * H - 0.60 * N - 0.20 * B
 
@@ -84,7 +68,6 @@ def compute_persona(DA, BH, TI, ENG, PU, SI, PS):
     w_vec = _softmax(vec, beta=3.5)
     weights = dict(zip(order, w_vec))
 
-    # ---- Autonomy Signals (same as you had) ----
     C_raw = 1.4 * weights["Loyalist"] + 1.0 * weights["Fan"]
     V_raw = 1.3 * weights["Switcher"] + 1.5 * weights["Drifter"]
 
@@ -92,7 +75,6 @@ def compute_persona(DA, BH, TI, ENG, PU, SI, PS):
     C = float(C_raw / s)
     V = float(V_raw / s)
 
-    # ---- IMPORTANT FIX: dominant from weights, not raw scores ----
     dominant = max(weights, key=weights.get)
 
     return dominant, scores, weights, C, V
@@ -102,7 +84,7 @@ def compute_forcing_term(DA, BH, TI, ENG, PU, SI, PS):
     dt = 0.01
     t = 800
 
-    # professor-style parameters
+   #parameters
     alpha = 0.9
     omega = 0.7
     eta   = 0.9
