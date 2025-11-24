@@ -26,7 +26,13 @@ def get_db():
 db = get_db()
 TARGET_COLLECTION = "apple_upgrade_predictions"
 
-# ---------------- MODEL LOGIC (CLEAN v2 — NO SCALING) ----------------
+# ---------------- MODEL LOGIC (FIXED v3 — STRONGER SEPARATION) ----------------
+# Goal of this fix:
+# - Make personas more distinct (Loyalist ≠ Fan, Switcher ≠ Drifter)
+# - Make Upgrade/Delay/Churn align better with personas
+# - Keep professor-style flow: Inputs → Behaviorals → Personas → C/V → X,Y,S → Forcing Term
+
+import numpy as np
 
 def compute_behaviorals(DA, BH, TI, ENG, PU, SI, PS):
     """
@@ -42,8 +48,11 @@ def compute_behaviorals(DA, BH, TI, ENG, PU, SI, PS):
     return N, B, H
 
 
-def _softmax(x, beta=2.0):
-    """Stable softmax for persona normalization."""
+def _softmax(x, beta=4.0):
+    """
+    Stable softmax for persona normalization.
+    beta↑ makes persona weights sharper (more distinct clusters).
+    """
     x = np.array(x, dtype=float) * beta
     x = x - np.max(x)
     e = np.exp(x)
@@ -52,8 +61,9 @@ def _softmax(x, beta=2.0):
 
 def compute_persona(DA, BH, TI, ENG, PU, SI, PS):
     """
-    Layer 2: Persona Mapping
+    Layer 2: Persona Mapping (STRONGER weights)
     (N,B,H) -> persona scores -> persona weights -> (C,V)
+
     Returns:
       dominant persona (string)
       raw persona scores (dict)
@@ -63,10 +73,11 @@ def compute_persona(DA, BH, TI, ENG, PU, SI, PS):
     """
     N, B, H = compute_behaviorals(DA, BH, TI, ENG, PU, SI, PS)
 
-    H1_loyalist = 0.6 * N + 0.3 * B - 0.5 * H
-    H2_fan      = 0.7 * B + 0.2 * N - 0.3 * H
-    H3_switcher = 0.6 * H - 0.3 * B + 0.1 * N
-    H4_drifter  = 1.0 * H - 0.5 * N - 0.2 * B
+    # ---- FIXED Persona Equations (more gap between types) ----
+    H1_loyalist = 0.8 * N + 0.4 * B - 0.6 * H
+    H2_fan      = 0.6 * B + 0.3 * N - 0.4 * H
+    H3_switcher = 0.8 * H - 0.2 * B + 0.05 * N
+    H4_drifter  = 1.1 * H - 0.6 * N - 0.2 * B
 
     scores = {
         "Loyalist": H1_loyalist,
@@ -77,10 +88,19 @@ def compute_persona(DA, BH, TI, ENG, PU, SI, PS):
 
     order = ["Loyalist", "Fan", "Switcher", "Drifter"]
     vec = [scores[k] for k in order]
-    weights = dict(zip(order, _softmax(vec, beta=2.0)))
 
-    C = weights["Loyalist"] + weights["Fan"]       # Commitment
-    V = weights["Switcher"] + weights["Drifter"]   # Volatility (= 1 - C)
+    # sharper normalization
+    w_vec = _softmax(vec, beta=4.0)
+    weights = dict(zip(order, w_vec))
+
+    # ---- FIXED Autonomy Signals (extremes dominate) ----
+    C_raw = 1.4 * weights["Loyalist"] + 1.0 * weights["Fan"]
+    V_raw = 1.3 * weights["Switcher"] + 1.5 * weights["Drifter"]
+
+    # normalize C and V back into [0,1] and to sum ~ 1
+    s = C_raw + V_raw + 1e-9
+    C = float(C_raw / s)
+    V = float(V_raw / s)
 
     dominant = max(scores, key=scores.get)
     return dominant, scores, weights, C, V
@@ -90,26 +110,32 @@ def compute_forcing_term(DA, BH, TI, ENG, PU, SI, PS):
     """
     Layer 3: Forcing Term Dynamics (persona-driven)
     Uses ONLY (C,V) from Layer 2.
-    No scaling of alpha/omega/eta.
+    No scaling of alpha/omega/eta by C.
     """
+
     dt = 0.01
     t = 800
 
-    alpha = 0.7
-    omega = 0.5
+    # fixed parameters (as you wanted)
+    alpha = 0.9
+    omega = 0.7
     eta   = 0.9
 
-    # Layer 2 output (ignore first 3 returns)
+    # Layer 2 output
     _, _, _, C, V = compute_persona(DA, BH, TI, ENG, PU, SI, PS)
 
     forcing = np.zeros(t)
 
-    # Persona-driven initial pressure
-    forcing[0] = np.clip(0.1 + 0.3*C - 0.2*V, 0, 1)
+    # ---- FIXED Initial Pressure (stronger separation) ----
+    # baseline 0.15
+    # commitment boosts more
+    # volatility suppresses more
+    forcing[0] = np.clip(0.15 + 0.5*C - 0.35*V, 0, 1)
 
     for k in range(1, t):
+        # ---- FIXED Short-term signals (clean professor-style but sharper) ----
         # Upgrade Pressure
-        X = alpha * C - (1 - alpha) * V
+        X = (alpha * C) + (1 - alpha) * V
         # Hesitation Impact
         Y = omega * V
         # Effective Upgrade Signal
