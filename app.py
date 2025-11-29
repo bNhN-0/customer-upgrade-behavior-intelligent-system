@@ -29,6 +29,10 @@ TARGET_COLLECTION = "apple_upgrade_predictions"
 # ---------------- MODEL LOGIC  ----------------
 
 def compute_behaviorals(DA, BH, TI, ENG, PU, SI, PS):
+    """
+    Layer 1: Behavioral Extraction
+    7 inputs -> (Need, Bonding, Hesitation)
+    """
     N = (DA + TI + ENG + PU + SI) / 5.0
     B = (ENG + PU + SI) / 3.0
     H = (
@@ -39,7 +43,10 @@ def compute_behaviorals(DA, BH, TI, ENG, PU, SI, PS):
 
 
 def _softmax(x, beta=3.5):
-
+    """
+    Stable softmax for persona normalization.
+    beta↑ makes persona weights sharper (more distinct clusters).
+    """
     x = np.array(x, dtype=float) * beta
     x = x - np.max(x)
     e = np.exp(x)
@@ -47,7 +54,17 @@ def _softmax(x, beta=3.5):
 
 
 def compute_persona(DA, BH, TI, ENG, PU, SI, PS):
- 
+    """
+    Layer 2: Persona Mapping
+    (N,B,H) -> persona scores -> persona weights -> (C,V)
+
+    Returns:
+      dominant persona (string)
+      raw persona scores (dict)
+      persona weights (dict)
+      Commitment C
+      Volatility V
+    """
     N, B, H = compute_behaviorals(DA, BH, TI, ENG, PU, SI, PS)
 
     H1_loyalist = 0.90 * N + 0.25 * B - 0.70 * H
@@ -68,7 +85,9 @@ def compute_persona(DA, BH, TI, ENG, PU, SI, PS):
     w_vec = _softmax(vec, beta=3.5)
     weights = dict(zip(order, w_vec))
 
+    # Commitment from positive personas
     C_raw = 1.4 * weights["Loyalist"] + 1.0 * weights["Fan"]
+    # Volatility from unstable personas
     V_raw = 1.3 * weights["Switcher"] + 1.5 * weights["Drifter"]
 
     s = C_raw + V_raw + 1e-9
@@ -81,10 +100,14 @@ def compute_persona(DA, BH, TI, ENG, PU, SI, PS):
 
 
 def compute_forcing_term(DA, BH, TI, ENG, PU, SI, PS):
+    """
+    Layer 3: Forcing Term Dynamics (persona-driven)
+    Uses ONLY (C,V) from Layer 2.
+    """
     dt = 0.01
     t = 800
 
-   #parameters
+    # parameters
     alpha = 0.9
     omega = 0.7
     eta   = 0.9
@@ -93,12 +116,13 @@ def compute_forcing_term(DA, BH, TI, ENG, PU, SI, PS):
 
     forcing = np.zeros(t)
 
+    # initial pressure: baseline + commitment boost - volatility penalty
     forcing[0] = np.clip(0.15 + 0.5*C - 0.35*V, 0, 1)
 
     for k in range(1, t):
-        X = (alpha * C) + (1 - alpha) * V
-        Y = omega * V
-        S = X * (1 - Y)
+        X = (alpha * C) + (1 - alpha) * V      # Upgrade Pressure
+        Y = omega * V                          # Hesitation Impact
+        S = X * (1 - Y)                        # Effective short-term signal
 
         forcing[k] = forcing[k-1] + eta * (S - forcing[k-1]) * dt
 
@@ -114,6 +138,100 @@ def classify_forcing_term(value: float) -> str:
     else:
         return "Churn Risk"
 
+
+# ---------------- ACTION LAYER (CRM / BUSINESS RULES) ----------------
+
+def recommend_actions(persona: str, decision: str):
+    """
+    Map (persona, decision) -> list of recommended CRM / business actions.
+    """
+    persona = persona or ""
+    decision = decision or ""
+
+    persona = persona.strip()
+    decision = decision.strip()
+
+    actions = []
+
+    if persona == "Loyalist":
+        if decision == "Upgrade Soon":
+            actions = [
+                "Send VIP early-upgrade invitation.",
+                "Offer exclusive preorder slot or color.",
+                "Apply small extra trade-in bonus (+5%)."
+            ]
+        elif decision == "Delay Upgrade":
+            actions = [
+                "Send soft reminder (no heavy discount).",
+                "Offer accessory promo (case / cable / MagSafe).",
+                "Promote AppleCare or extended warranty."
+            ]
+        else:  # Churn Risk but Loyalist (rare)
+            actions = [
+                "Trigger retention check: ask feedback on why they hesitate.",
+                "Offer limited-time loyalty thank-you coupon.",
+            ]
+
+    elif persona == "Fan":
+        if decision == "Upgrade Soon":
+            actions = [
+                "Highlight bundle deal (iPhone + AirPods / iCloud storage).",
+                "Promote 0% installment or student pricing.",
+                "Show benefits: better camera, battery, performance."
+            ]
+        elif decision == "Delay Upgrade":
+            actions = [
+                "Send value-focused email: 'What you gain by upgrading.'",
+                "Small discount or trade-in top-up to unlock decision.",
+            ]
+        else:  # Churn Risk
+            actions = [
+                "Check if price is main barrier; offer budget / SE model.",
+                "Do not overspend on incentives; keep light reminders only.",
+            ]
+
+    elif persona == "Switcher":
+        if decision == "Upgrade Soon":
+            actions = [
+                "Emphasize Apple ecosystem lock-in (Continuity, iCloud, Handoff).",
+                "Give competitive trade-in value even from Android.",
+                "Provide migration assistance (data transfer, training tips)."
+            ]
+        elif decision == "Delay Upgrade":
+            actions = [
+                "Retarget with comparison ads vs competitors.",
+                "Offer limited-time trade-in bonus to reduce indecision.",
+            ]
+        else:  # Churn Risk
+            actions = [
+                "Trigger win-back campaign with strong but one-time offer.",
+                "Highlight long-term value and resale price of Apple devices."
+            ]
+
+    elif persona == "Drifter":
+        if decision == "Upgrade Soon":
+            actions = [
+                "Suggest mid-tier or refurbished models.",
+                "Keep communication simple and low-cost.",
+            ]
+        elif decision == "Delay Upgrade":
+            actions = [
+                "Send occasional generic promo (no heavy personalization).",
+                "Suggest budget-friendly alternatives or older models.",
+            ]
+        else:  # Churn Risk
+            actions = [
+                "Send one final 'thank you + small discount' offer.",
+                "If no engagement → reduce marketing spend for this user."
+            ]
+    else:
+        # Unknown persona fallback
+        actions = [
+            "Monitor behavior for more data.",
+            "Keep generic but not aggressive communication."
+        ]
+
+    return actions
 
 
 # ---------------- DATA LOADING ----------------
@@ -180,7 +298,7 @@ st.markdown(
 
 # ---------------- MAIN APP ----------------
 st.title(" Apple Upgrade Prediction Dashboard")
-st.caption("Firestore → Persona & Forcing Term Insights")
+st.caption("Firestore → Persona → Forcing Term → Action Recommendations")
 
 with st.sidebar:
     st.markdown("### Data controls")
@@ -238,7 +356,6 @@ with tab_loader:
                             ft = round(ft_raw, 3)
                             decision = classify_forcing_term(ft)
 
-                            # FIX: compute_persona returns 5 values now
                             dominant, scores, _, _, _ = compute_persona(
                                 DA, BH, TI, ENG, PU, SI, PS
                             )
@@ -266,7 +383,7 @@ with tab_loader:
         st.info("Upload a CSV to compute and push results.")
 
 
-# ===================== IF NO DATA YET: SHOW MESSAGES, DON'T STOP APP =====================
+# ===================== IF NO DATA YET =====================
 if df.empty:
     with tab_overview:
         st.warning("No computed documents found yet. Use Data Loader tab to upload CSV.")
@@ -387,6 +504,17 @@ with tab_persona:
     st.markdown("**Mean forcing term by persona**")
     st.bar_chart(persona_means[["forcing_term"]], use_container_width=True)
 
+    st.markdown("---")
+    st.markdown("### Action Playbook (Persona → Typical Strategy)")
+    st.markdown(
+        """
+        - **Loyalist** → Reward & retain (VIP upgrades, loyalty perks).  
+        - **Fan** → Convince & support (installments, value-focused messaging).  
+        - **Switcher** → Stabilize (ecosystem benefits, trade-in competitiveness).  
+        - **Drifter** → Low-cost touch (generic promos, budget models, limited spend).
+        """
+    )
+
 
 # ===================== TAB 3: USER EXPLORER =====================
 def radar_chart(scores_dict, title="Persona Radar"):
@@ -417,11 +545,13 @@ with tab_user:
     user_row = filtered_df[filtered_df["id"] == selected_user_id].iloc[0]
     persona = user_row["persona"]
     scores  = user_row["persona_scores"]
+    decision = user_row["decision"]
 
     left, right = st.columns([1, 1.2])
 
     with left:
-        st.markdown(f"**Decision:** {user_row['decision']}")
+        st.markdown(f"**User ID:** `{selected_user_id}`")
+        st.markdown(f"**Decision:** {decision}")
         st.markdown(f"**Forcing term:** `{user_row['forcing_term']:.3f}`")
         st.markdown(f"**Persona:** **{persona}**")
 
@@ -430,6 +560,12 @@ with tab_user:
             "Value": [user_row["Need"], user_row["Bonding"], user_row["Hesitation"]]
         })
         st.bar_chart(beh_df, x="Factor", y="Value", use_container_width=True)
+
+        st.markdown("---")
+        st.markdown("### Recommended CRM Actions")
+        action_list = recommend_actions(persona, decision)
+        for a in action_list:
+            st.markdown(f"- {a}")
 
     with right:
         st.markdown("**Persona radar scores (H1–H4)**")
