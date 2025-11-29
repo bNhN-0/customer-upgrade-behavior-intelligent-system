@@ -140,99 +140,86 @@ def classify_forcing_term(value: float) -> str:
 
 
 # ---------------- ACTION LAYER (CRM / BUSINESS RULES) ----------------
-
 def recommend_actions(persona: str, decision: str):
     """
-    Map (persona, decision) -> list of recommended CRM / business actions.
+    Simple rule-based action trigger.
+    Persona + Decision -> Recommended CRM actions.
     """
-    persona = persona or ""
-    decision = decision or ""
+    persona = (persona or "").strip()
+    decision = (decision or "").strip()
 
-    persona = persona.strip()
-    decision = decision.strip()
-
-    actions = []
+    # Default fallback
+    actions = ["Send general follow-up message."]
 
     if persona == "Loyalist":
         if decision == "Upgrade Soon":
             actions = [
-                "Send VIP early-upgrade invitation.",
-                "Offer exclusive preorder slot or color.",
-                "Apply small extra trade-in bonus (+5%)."
+                "Send VIP upgrade offer.",
+                "Give small trade-in bonus."
             ]
         elif decision == "Delay Upgrade":
             actions = [
-                "Send soft reminder (no heavy discount).",
-                "Offer accessory promo (case / cable / MagSafe).",
-                "Promote AppleCare or extended warranty."
+                "Send gentle reminder.",
+                "Offer small accessory promo."
             ]
-        else:  # Churn Risk but Loyalist (rare)
+        else:  # Churn
             actions = [
-                "Trigger retention check: ask feedback on why they hesitate.",
-                "Offer limited-time loyalty thank-you coupon.",
+                "Ask for feedback.",
+                "Send loyalty thank-you coupon."
             ]
 
     elif persona == "Fan":
         if decision == "Upgrade Soon":
             actions = [
-                "Highlight bundle deal (iPhone + AirPods / iCloud storage).",
-                "Promote 0% installment or student pricing.",
-                "Show benefits: better camera, battery, performance."
+                "Promote bundle deal.",
+                "Highlight camera/battery benefits."
             ]
         elif decision == "Delay Upgrade":
             actions = [
-                "Send value-focused email: 'What you gain by upgrading.'",
-                "Small discount or trade-in top-up to unlock decision.",
+                "Send value explanation.",
+                "Offer small trade-in top-up."
             ]
-        else:  # Churn Risk
+        else:  # Churn
             actions = [
-                "Check if price is main barrier; offer budget / SE model.",
-                "Do not overspend on incentives; keep light reminders only.",
+                "Suggest cheaper model.",
+                "Keep light reminders only."
             ]
 
     elif persona == "Switcher":
         if decision == "Upgrade Soon":
             actions = [
-                "Emphasize Apple ecosystem lock-in (Continuity, iCloud, Handoff).",
-                "Give competitive trade-in value even from Android.",
-                "Provide migration assistance (data transfer, training tips)."
+                "Highlight Apple ecosystem features.",
+                "Give competitive trade-in value."
             ]
         elif decision == "Delay Upgrade":
             actions = [
-                "Retarget with comparison ads vs competitors.",
-                "Offer limited-time trade-in bonus to reduce indecision.",
+                "Retarget with comparison ads.",
+                "Give limited-time trade-in bonus."
             ]
-        else:  # Churn Risk
+        else:  # Churn
             actions = [
-                "Trigger win-back campaign with strong but one-time offer.",
-                "Highlight long-term value and resale price of Apple devices."
+                "Send win-back offer.",
+                "Highlight long-term resale value."
             ]
 
     elif persona == "Drifter":
         if decision == "Upgrade Soon":
             actions = [
                 "Suggest mid-tier or refurbished models.",
-                "Keep communication simple and low-cost.",
+                "Keep communication simple."
             ]
         elif decision == "Delay Upgrade":
             actions = [
-                "Send occasional generic promo (no heavy personalization).",
-                "Suggest budget-friendly alternatives or older models.",
+                "Send occasional generic promo.",
+                "Suggest older/cheaper models."
             ]
-        else:  # Churn Risk
+        else:  # Churn
             actions = [
-                "Send one final 'thank you + small discount' offer.",
-                "If no engagement → reduce marketing spend for this user."
+                "Send final small discount.",
+                "Reduce marketing cost for this user."
             ]
-    else:
-        # Unknown persona fallback
-        actions = [
-            "Monitor behavior for more data.",
-            "Keep generic but not aggressive communication."
-        ]
 
     return actions
-
 
 # ---------------- DATA LOADING ----------------
 @st.cache_data
@@ -321,11 +308,11 @@ with st.sidebar:
 df = load_data_from_firestore()
 
 tabs = st.tabs([
-    "📊 Overview",
-    "🧠 Persona Insights",
-    "📧 CRM Planner",
-    "👤 User Explorer",
-    "⬆️ Data Loader"
+    " Overview",
+    " Persona Insights",
+    " CRM Planner",
+    " User Explorer",
+    " Data Loader"
 ])
 tab_overview, tab_persona, tab_crm, tab_user, tab_loader = tabs
 
