@@ -131,9 +131,9 @@ def compute_forcing_term(DA, BH, TI, ENG, PU, SI, PS):
 
 def classify_forcing_term(value: float) -> str:
     value = round(value, 2)
-    if value >= 0.60:
+    if value >= 0.70:
         return "Upgrade Soon"
-    elif value >= 0.10:
+    elif value >= 0.30:
         return "Delay Upgrade"
     else:
         return "Churn Risk"
