@@ -472,26 +472,87 @@ with tab_overview:
     st.subheader("Forcing term overview")
     c1, c2 = st.columns([2, 1])
 
+    # -------- Left: Forcing term by user --------
     with c1:
         st.markdown("**Forcing term by user (sorted)**")
-        line_df = filtered_df.sort_values("forcing_term").set_index("id")[["forcing_term"]]
-        st.line_chart(line_df)
+        if not filtered_df.empty:
+            line_df = (
+                filtered_df
+                .sort_values("forcing_term")
+                .set_index("id")[["forcing_term"]]
+            )
+            st.line_chart(line_df)
+        else:
+            st.info("No users match the current filter.")
 
+    # -------- Right: Decision breakdown pie --------
     with c2:
         st.markdown("**Decision breakdown**")
-        decision_counts = filtered_df["decision"].value_counts().reindex(decision_options, fill_value=0)
-        fig, ax = plt.subplots()
-        ax.pie(decision_counts.values, labels=decision_counts.index, autopct="%1.0f%%", startangle=90)
-        ax.axis("equal")
-        st.pyplot(fig)
+        if not filtered_df.empty:
+            decision_counts = (
+                filtered_df["decision"]
+                .value_counts()
+                .reindex(decision_options, fill_value=0)
+            )
+            fig, ax = plt.subplots()
+            ax.pie(
+                decision_counts.values,
+                labels=decision_counts.index,
+                autopct="%1.0f%%",
+                startangle=90,
+            )
+            ax.axis("equal")
+            st.pyplot(fig)
+        else:
+            st.info("No decision data for the current filter.")
 
+    # -------- Histogram of forcing terms --------
     st.markdown("**Forcing term distribution**")
-    arr = filtered_df["forcing_term"].to_numpy()
-    fig_hist, ax_hist = plt.subplots()
-    ax_hist.hist(arr, bins=10, edgecolor="black")
-    ax_hist.set_xlabel("Forcing term")
-    ax_hist.set_ylabel("Frequency")
-    st.pyplot(fig_hist)
+    if not filtered_df.empty:
+        arr = filtered_df["forcing_term"].to_numpy()
+        fig_hist, ax_hist = plt.subplots()
+        ax_hist.hist(arr, bins=10, edgecolor="black")
+        ax_hist.set_xlabel("Forcing term")
+        ax_hist.set_ylabel("Frequency")
+        st.pyplot(fig_hist)
+    else:
+        st.info("No forcing term values for the current filter.")
+
+    st.markdown("---")
+
+    # ===================== CRM ACTION SUMMARY =====================
+    st.subheader("Top CRM Actions for This Segment")
+
+    all_actions = []
+
+    if "crm_actions" in filtered_df.columns:
+        for actions in filtered_df["crm_actions"]:
+            if isinstance(actions, (list, tuple)):
+                all_actions.extend(actions)
+            elif isinstance(actions, str):
+                # in case some rows store a single string
+                all_actions.append(actions)
+
+    if all_actions:
+        action_series = pd.Series(all_actions)
+        action_counts = action_series.value_counts().sort_values(ascending=False)
+
+        st.write("Most frequent recommended CRM actions across the filtered users:")
+        st.dataframe(
+            action_counts.rename("Count").to_frame(),
+            use_container_width=True,
+        )
+
+        fig_act, ax_act = plt.subplots()
+        x_positions = np.arange(len(action_counts))
+        ax_act.bar(x_positions, action_counts.values)
+        ax_act.set_ylabel("Count")
+        ax_act.set_xticks(x_positions)
+        ax_act.set_xticklabels(action_counts.index, rotation=45, ha="right")
+        st.pyplot(fig_act)
+    else:
+        st.info("No CRM actions available for the current filter. "
+                "Check that crm_actions are saved or computed in the loader.")
 
 
 # ===================== TAB 2: PERSONA INSIGHTS =====================
