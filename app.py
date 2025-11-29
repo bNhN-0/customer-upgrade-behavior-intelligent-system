@@ -253,6 +253,8 @@ def load_data_from_firestore():
             "forcing_term": d.get("forcing_term"),
             "decision": d.get("decision"),
             "created_at": d.get("created_at"),
+            # may or may not exist yet:
+            "crm_actions": d.get("crm_actions"),
         })
 
     if not rows:
@@ -262,7 +264,7 @@ def load_data_from_firestore():
     df["forcing_term"] = pd.to_numeric(df["forcing_term"], errors="coerce")
     df = df.dropna(subset=["forcing_term"])
 
-    personas, score_list, Ns, Bs, Hs = [], [], [], [], []
+    personas, score_list, Ns, Bs, Hs, actions_col = [], [], [], [], [], []
     for _, r in df.iterrows():
         p, scores, _, _, _ = compute_persona(
             r.DA, r.BH, r.TI, r.ENG, r.PU, r.SI, r.PS
@@ -273,13 +275,23 @@ def load_data_from_firestore():
         N, B, H = compute_behaviorals(
             r.DA, r.BH, r.TI, r.ENG, r.PU, r.SI, r.PS
         )
-        Ns.append(N); Bs.append(B); Hs.append(H)
+        Ns.append(N)
+        Bs.append(B)
+        Hs.append(H)
+
+        # if Firestore already has crm_actions, use them; else compute now
+        stored_actions = r.get("crm_actions") if isinstance(r, pd.Series) else None
+        if stored_actions:
+            actions_col.append(stored_actions)
+        else:
+            actions_col.append(recommend_actions(p, r.decision))
 
     df["persona"] = personas
     df["persona_scores"] = score_list
     df["Need"] = Ns
     df["Bonding"] = Bs
     df["Hesitation"] = Hs
+    df["crm_actions"] = actions_col
 
     return df
 
@@ -298,7 +310,7 @@ st.markdown(
 
 # ---------------- MAIN APP ----------------
 st.title(" Apple Upgrade Prediction Dashboard")
-st.caption("Firestore → Persona → Forcing Term → Action Recommendations")
+st.caption("Firestore → Persona → Forcing Term → CRM Action Recommendations")
 
 with st.sidebar:
     st.markdown("### Data controls")
@@ -322,6 +334,7 @@ with tab_loader:
         - compute forcing_term
         - classify decision
         - compute persona + persona_scores
+        - derive CRM actions
         - save into Firestore
 
         Required columns:
@@ -360,6 +373,8 @@ with tab_loader:
                                 DA, BH, TI, ENG, PU, SI, PS
                             )
 
+                            crm_actions = recommend_actions(dominant, decision)
+
                             out_doc = {
                                 "DA": DA, "BH": BH, "TI": TI, "ENG": ENG,
                                 "PU": PU, "SI": SI, "PS": PS,
@@ -367,6 +382,7 @@ with tab_loader:
                                 "decision": decision,
                                 "persona": dominant,
                                 "persona_scores": scores,
+                                "crm_actions": crm_actions,
                                 "source_id": user_id,
                                 "created_at": firestore.SERVER_TIMESTAMP,
                             }
@@ -378,7 +394,7 @@ with tab_loader:
 
                 load_data_from_firestore.clear()
                 st.success(f"Saved {ok} users to Firestore.")
-                st.info("Go to Overview / Persona tabs to explore.")
+                st.info("Go to Overview / Persona / User Explorer tabs to explore.")
     else:
         st.info("Upload a CSV to compute and push results.")
 
@@ -563,7 +579,13 @@ with tab_user:
 
         st.markdown("---")
         st.markdown("### Recommended CRM Actions")
-        action_list = recommend_actions(persona, decision)
+
+        stored_actions = user_row.get("crm_actions")
+        if stored_actions:
+            action_list = stored_actions
+        else:
+            action_list = recommend_actions(persona, decision)
+
         for a in action_list:
             st.markdown(f"- {a}")
 
