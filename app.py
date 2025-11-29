@@ -567,9 +567,10 @@ with tab_persona:
 
 # ===================== TAB 3: CRM PLANNER =====================
 with tab_crm:
-    st.subheader("CRM Planner – What Should Marketing Do?")
+    st.subheader("📧 CRM Planner – Recommended Actions for Your Segment")
 
     if "crm_actions" in filtered_df.columns and not filtered_df.empty:
+        # ---------- Collect all actions from filtered users ----------
         all_actions = []
         for actions in filtered_df["crm_actions"]:
             if isinstance(actions, (list, tuple)):
@@ -581,35 +582,48 @@ with tab_crm:
             action_series = pd.Series(all_actions)
             action_counts = action_series.value_counts().sort_values(ascending=False)
 
-            st.markdown("**Most frequent recommended CRM actions for this filtered segment:**")
+            st.markdown("### Top CRM Actions Across Selected Segment")
+
+            # ---------- Show table of actions + counts ----------
             st.dataframe(
                 action_counts.rename("Count").to_frame(),
                 use_container_width=True,
             )
 
-            fig_act, ax_act = plt.subplots()
-            x_positions = np.arange(len(action_counts))
-            ax_act.bar(x_positions, action_counts.values)
-            ax_act.set_ylabel("Count")
-            ax_act.set_xticks(x_positions)
-            ax_act.set_xticklabels(action_counts.index, rotation=45, ha="right")
+            # ---------- Horizontal Bar Chart (CLEAN) ----------
+            import textwrap
+
+            top_n = min(8, len(action_counts))  # Show only top 8 actions
+            subset = action_counts.head(top_n)[::-1]  # Reverse for nicer top-down layout
+
+            wrapped_labels = [textwrap.fill(lbl, width=30) for lbl in subset.index]
+
+            fig_act, ax_act = plt.subplots(figsize=(10, 6))
+            ax_act.barh(range(len(subset)), subset.values, color="#4C8BF5")
+            ax_act.set_yticks(range(len(subset)))
+            ax_act.set_yticklabels(wrapped_labels)
+            ax_act.set_xlabel("Count")
+            ax_act.set_title("Top CRM Actions (Horizontal)")
+            ax_act.grid(axis="x", linestyle="--", alpha=0.4)
+
+            plt.tight_layout()
             st.pyplot(fig_act)
 
-            # Optional export for campaigns
-            st.markdown("#### Download segment for campaign use")
+            # ---------- Export filtered segment ----------
+            st.markdown("### 📥 Download This Segment")
             export_df = filtered_df[["id", "persona", "decision", "crm_actions"]].copy()
             csv = export_df.to_csv(index=False).encode("utf-8")
             st.download_button(
-                "Download current segment as CSV",
+                "Download CRM Segment as CSV",
                 data=csv,
                 file_name="crm_segment_export.csv",
                 mime="text/csv",
             )
-        else:
-            st.info("No CRM actions found for the current filter.")
-    else:
-        st.info("No CRM actions available. Make sure data is computed and stored.")
 
+        else:
+            st.info("This filtered segment has no CRM actions.")
+    else:
+        st.info("No CRM action data available. Upload and compute data first.")
 
 # ===================== TAB 4: USER EXPLORER =====================
 def radar_chart(scores_dict, title="Persona Radar"):
