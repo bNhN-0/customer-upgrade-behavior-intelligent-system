@@ -109,7 +109,6 @@ def compute_forcing_term(DA, BH, TI, ENG, PU, SI, PS):
     # parameters
     alpha = 0.9
     omega = 0.7
-    gamma = 0.85 
     eta   = 0.9
 
     _, _, _, C, V = compute_persona(DA, BH, TI, ENG, PU, SI, PS)
@@ -122,8 +121,7 @@ def compute_forcing_term(DA, BH, TI, ENG, PU, SI, PS):
     for k in range(1, t):
         X = (alpha * C) + (1 - alpha) * V      # Upgrade Pressure
         Y = omega * V                          # Hesitation Impact
-        S = (gamma * X) + ((1 - gamma) * Y)
-                      
+        S = X * (1 - Y)                        # Effective short-term signal
 
         forcing[k] = forcing[k-1] + eta * (S - forcing[k-1]) * dt
 
