@@ -1,6 +1,7 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -24,7 +25,8 @@ def get_db():
 db = get_db()
 TARGET_COLLECTION = "apple_upgrade_predictions"
 
-# ---------------- MODEL LOGIC ----------------
+# Model Loigc
+
 def compute_behaviorals(DA, BH, TI, ENG, PU, SI, PS):
     """
     Layer 1: Behavioral Extraction
@@ -54,6 +56,13 @@ def compute_persona(DA, BH, TI, ENG, PU, SI, PS):
     """
     Layer 2: Persona Mapping
     (N,B,H) -> persona scores -> persona weights -> (C,V)
+
+    Returns:
+      dominant persona (string)
+      raw persona scores (dict)
+      persona weights (dict)
+      Commitment C
+      Volatility V
     """
     N, B, H = compute_behaviorals(DA, BH, TI, ENG, PU, SI, PS)
 
@@ -138,6 +147,7 @@ def recommend_actions(persona: str, decision: str):
     persona = (persona or "").strip()
     decision = (decision or "").strip()
 
+    # Default fallback
     actions = ["Send general follow-up message."]
 
     if persona == "Loyalist":
@@ -151,7 +161,7 @@ def recommend_actions(persona: str, decision: str):
                 "Send gentle reminder.",
                 "Offer small accessory promo."
             ]
-        else:
+        else:  # Churn
             actions = [
                 "Ask for feedback.",
                 "Send loyalty thank-you coupon."
@@ -168,7 +178,7 @@ def recommend_actions(persona: str, decision: str):
                 "Send value explanation.",
                 "Offer small trade-in top-up."
             ]
-        else:
+        else:  # Churn
             actions = [
                 "Suggest cheaper model.",
                 "Keep light reminders only."
@@ -185,7 +195,7 @@ def recommend_actions(persona: str, decision: str):
                 "Retarget with comparison ads.",
                 "Give limited-time trade-in bonus."
             ]
-        else:
+        else:  # Churn
             actions = [
                 "Send win-back offer.",
                 "Highlight long-term resale value."
@@ -202,14 +212,13 @@ def recommend_actions(persona: str, decision: str):
                 "Send occasional generic promo.",
                 "Suggest older/cheaper models."
             ]
-        else:
+        else:  # Churn
             actions = [
                 "Send final small discount.",
                 "Reduce marketing cost for this user."
             ]
 
     return actions
-
 
 # ---------------- DATA LOADING ----------------
 @st.cache_data
@@ -230,6 +239,7 @@ def load_data_from_firestore():
             "forcing_term": d.get("forcing_term"),
             "decision": d.get("decision"),
             "created_at": d.get("created_at"),
+            # may or may not exist yet:
             "crm_actions": d.get("crm_actions"),
         })
 
@@ -255,6 +265,7 @@ def load_data_from_firestore():
         Bs.append(B)
         Hs.append(H)
 
+        # if Firestore already has crm_actions, use them; else compute now
         stored_actions = r.get("crm_actions") if isinstance(r, pd.Series) else None
         if stored_actions:
             actions_col.append(stored_actions)
@@ -284,7 +295,7 @@ st.markdown(
 )
 
 # ---------------- MAIN APP ----------------
-st.title("Apple Upgrade Prediction Dashboard")
+st.title(" Apple Upgrade Prediction Dashboard")
 st.caption("From behavioral inputs → Personas → Forcing Term → CRM Actions")
 
 with st.sidebar:
@@ -296,11 +307,11 @@ with st.sidebar:
 df = load_data_from_firestore()
 
 tabs = st.tabs([
-    "Overview",
-    "Persona Insights",
-    "CRM Planner",
-    "User Explorer",
-    "Data Loader"
+    " Overview",
+    " Persona Insights",
+    " CRM Planner",
+    " User Explorer",
+    " Data Loader"
 ])
 tab_overview, tab_persona, tab_crm, tab_user, tab_loader = tabs
 
@@ -313,7 +324,7 @@ with tab_loader:
         """
         1. Upload your raw CSV  
         2. We compute: forcing_term, decision, persona, CRM actions  
-        3. Everything is saved into Firestore  
+        3. Everything is saved into Firestore
 
         **Required columns:** `id, DA, BH, TI, ENG, PU, SI, PS`
         """
@@ -450,52 +461,102 @@ st.markdown("---")
 with tab_overview:
     st.subheader("Segment Forcing Term & Decisions")
 
-    if not filtered_df.empty:
-        line_df = (
-            filtered_df
-            .sort_values("forcing_term")
-            .set_index("id")[["forcing_term"]]
-        )
-        st.markdown("**Forcing term by user (sorted)**")
-        st.line_chart(line_df, use_container_width=True)
+    c1, c2 = st.columns([2, 1])
 
-        st.markdown("**Decision breakdown (counts)**")
-        decision_counts = (
-            filtered_df["decision"]
-            .value_counts()
-            .reindex(decision_options, fill_value=0)
-        )
-        st.dataframe(decision_counts.rename("Count").to_frame())
+    # -------- Left: Forcing term by user --------
+    with c1:
+        st.markdown("**Forcing term by user (sorted)**")
+        if not filtered_df.empty:
+            line_df = (
+                filtered_df
+                .sort_values("forcing_term")
+                .set_index("id")[["forcing_term"]]
+            )
+            st.line_chart(line_df)
+        else:
+            st.info("No users match the current filter.")
+
+    # -------- Right: Decision breakdown pie --------
+    with c2:
+        st.markdown("**Decision breakdown**")
+        if not filtered_df.empty:
+            decision_counts = (
+                filtered_df["decision"]
+                .value_counts()
+                .reindex(decision_options, fill_value=0)
+            )
+            fig, ax = plt.subplots()
+            ax.pie(
+                decision_counts.values,
+                labels=decision_counts.index,
+                autopct="%1.0f%%",
+                startangle=90,
+            )
+            ax.axis("equal")
+            st.pyplot(fig)
+        else:
+            st.info("No decision data for the current filter.")
+
+    # Optional: simple histogram under both
+    st.markdown("#### Forcing term distribution")
+    if not filtered_df.empty:
+        arr = filtered_df["forcing_term"].to_numpy()
+        fig_hist, ax_hist = plt.subplots()
+        ax_hist.hist(arr, bins=10, edgecolor="black")
+        ax_hist.set_xlabel("Forcing term")
+        ax_hist.set_ylabel("Frequency")
+        st.pyplot(fig_hist)
     else:
-        st.info("No users match the current filter.")
+        st.info("No forcing term values for the current filter.")
 
 
 # ===================== TAB 2: PERSONA INSIGHTS =====================
 with tab_persona:
     st.subheader("Persona Insights")
 
-    if not filtered_df.empty:
-        p_counts = (
-            filtered_df["persona"]
-            .value_counts()
-            .reindex(persona_options, fill_value=0)
-        )
-        st.markdown("**Persona distribution (counts)**")
-        st.dataframe(p_counts.rename("Count").to_frame(), use_container_width=True)
+    p_counts = filtered_df["persona"].value_counts().reindex(persona_options, fill_value=0)
+    c1, c2 = st.columns([1.2, 2])
 
+    with c1:
+        st.markdown("**Persona distribution**")
+        figp, axp = plt.subplots()
+        axp.pie(p_counts.values, labels=p_counts.index, autopct="%1.0f%%", startangle=90)
+        axp.axis("equal")
+        st.pyplot(figp)
+
+    with c2:
         st.markdown("**Mean forcing term by persona**")
         persona_means = filtered_df.groupby("persona")[["forcing_term"]].mean()
         persona_means = persona_means.reindex(persona_options)
         st.bar_chart(persona_means, use_container_width=True)
-    else:
-        st.info("No persona data for the current filter.")
+
+    with st.expander("Show behavioral profile per persona (Need / Bonding / Hesitation)"):
+        if not filtered_df.empty:
+            beh_means = filtered_df.groupby("persona")[["Need", "Bonding", "Hesitation"]].mean()
+            beh_means = beh_means.reindex(persona_options)
+            st.bar_chart(beh_means, use_container_width=True)
+            st.caption("Need↑ + Bonding↑ push toward Upgrade. Hesitation↑ pushes toward Delay/Churn.")
+        else:
+            st.info("No data to show behavioral profiles.")
+
+    st.markdown("---")
+    st.markdown("### High-level Action Playbook")
+    st.markdown(
+        """
+        - **Loyalist** → Reward & retain (VIP upgrades, loyalty perks).  
+        - **Fan** → Convince & support (installments, value-focused messaging).  
+        - **Switcher** → Stabilize (ecosystem benefits, trade-in competitiveness).  
+        - **Drifter** → Low-cost touch (generic promos, budget models, limited spend).
+        """
+    )
 
 
 # ===================== TAB 3: CRM PLANNER =====================
 with tab_crm:
-    st.subheader("CRM Planner – Recommended Actions")
+    st.subheader("📧 CRM Planner – Recommended Actions for Your Segment")
 
     if "crm_actions" in filtered_df.columns and not filtered_df.empty:
+        # ---------- Collect all actions from filtered users ----------
         all_actions = []
         for actions in filtered_df["crm_actions"]:
             if isinstance(actions, (list, tuple)):
@@ -508,12 +569,34 @@ with tab_crm:
             action_counts = action_series.value_counts().sort_values(ascending=False)
 
             st.markdown("### Top CRM Actions Across Selected Segment")
+
+            # ---------- Show table of actions + counts ----------
             st.dataframe(
                 action_counts.rename("Count").to_frame(),
                 use_container_width=True,
             )
 
-            st.markdown("### Download This Segment")
+            # ---------- Horizontal Bar Chart (CLEAN) ----------
+            import textwrap
+
+            top_n = min(8, len(action_counts))  # Show only top 8 actions
+            subset = action_counts.head(top_n)[::-1]  # Reverse for nicer top-down layout
+
+            wrapped_labels = [textwrap.fill(lbl, width=30) for lbl in subset.index]
+
+            fig_act, ax_act = plt.subplots(figsize=(10, 6))
+            ax_act.barh(range(len(subset)), subset.values, color="#4C8BF5")
+            ax_act.set_yticks(range(len(subset)))
+            ax_act.set_yticklabels(wrapped_labels)
+            ax_act.set_xlabel("Count")
+            ax_act.set_title("Top CRM Actions (Horizontal)")
+            ax_act.grid(axis="x", linestyle="--", alpha=0.4)
+
+            plt.tight_layout()
+            st.pyplot(fig_act)
+
+            # ---------- Export filtered segment ----------
+            st.markdown("### 📥 Download This Segment")
             export_df = filtered_df[["id", "persona", "decision", "crm_actions"]].copy()
             csv = export_df.to_csv(index=False).encode("utf-8")
             st.download_button(
@@ -522,55 +605,70 @@ with tab_crm:
                 file_name="crm_segment_export.csv",
                 mime="text/csv",
             )
+
         else:
             st.info("This filtered segment has no CRM actions.")
     else:
         st.info("No CRM action data available. Upload and compute data first.")
 
-
 # ===================== TAB 4: USER EXPLORER =====================
+def radar_chart(scores_dict, title="Persona Radar"):
+    labels = list(scores_dict.keys())
+    values = list(scores_dict.values())
+
+    values += values[:1]
+    angles = np.linspace(0, 2*np.pi, len(labels), endpoint=False).tolist()
+    angles += angles[:1]
+
+    fig = plt.figure(figsize=(5,5))
+    ax = plt.subplot(111, polar=True)
+    ax.plot(angles, values, linewidth=2)
+    ax.fill(angles, values, alpha=0.25)
+    ax.set_thetagrids(np.degrees(angles[:-1]), labels)
+    ax.set_title(title, y=1.1)
+    ax.grid(True)
+    return fig
+
 with tab_user:
     st.subheader("User Explorer")
 
-    if filtered_df.empty:
-        st.info("No users in current filter.")
-    else:
-        selected_user_id = st.selectbox(
-            "Select user ID",
-            options=filtered_df["id"].tolist()
-        )
+    selected_user_id = st.selectbox(
+        "Select user ID",
+        options=filtered_df["id"].tolist()
+    )
 
-        user_row = filtered_df[filtered_df["id"] == selected_user_id].iloc[0]
-        persona = user_row["persona"]
-        scores  = user_row["persona_scores"]
-        decision = user_row["decision"]
+    user_row = filtered_df[filtered_df["id"] == selected_user_id].iloc[0]
+    persona = user_row["persona"]
+    scores  = user_row["persona_scores"]
+    decision = user_row["decision"]
 
-        left, right = st.columns([1, 1.2])
+    left, right = st.columns([1, 1.2])
 
-        with left:
-            st.markdown(f"**User ID:** `{selected_user_id}`")
-            st.markdown(f"**Decision:** {decision}")
-            st.markdown(f"**Forcing term:** `{user_row['forcing_term']:.3f}`")
-            st.markdown(f"**Persona:** **{persona}**")
+    with left:
+        st.markdown(f"**User ID:** `{selected_user_id}`")
+        st.markdown(f"**Decision:** {decision}")
+        st.markdown(f"**Forcing term:** `{user_row['forcing_term']:.3f}`")
+        st.markdown(f"**Persona:** **{persona}**")
 
-            beh_df = pd.DataFrame({
-                "Factor": ["Need", "Bonding", "Hesitation"],
-                "Value": [user_row["Need"], user_row["Bonding"], user_row["Hesitation"]]
-            })
-            st.bar_chart(beh_df, x="Factor", y="Value", use_container_width=True)
+        beh_df = pd.DataFrame({
+            "Factor": ["Need", "Bonding", "Hesitation"],
+            "Value": [user_row["Need"], user_row["Bonding"], user_row["Hesitation"]]
+        })
+        st.bar_chart(beh_df, x="Factor", y="Value", use_container_width=True)
 
-            st.markdown("---")
-            st.markdown("### Recommended CRM Actions")
+        st.markdown("---")
+        st.markdown("### Recommended CRM Actions")
 
-            stored_actions = user_row.get("crm_actions")
-            if stored_actions:
-                action_list = stored_actions
-            else:
-                action_list = recommend_actions(persona, decision)
+        stored_actions = user_row.get("crm_actions")
+        if stored_actions:
+            action_list = stored_actions
+        else:
+            action_list = recommend_actions(persona, decision)
 
-            for a in action_list:
-                st.markdown(f"- {a}")
+        for a in action_list:
+            st.markdown(f"- {a}")
 
-        with right:
-            st.markdown("### Persona raw scores (H1–H4)")
-            st.json(scores)
+    with right:
+        st.markdown("**Persona radar scores (H1–H4)**")
+        fig = radar_chart(scores, title=f"{persona} Profile")
+        st.pyplot(fig)
