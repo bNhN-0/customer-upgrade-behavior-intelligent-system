@@ -25,7 +25,7 @@ def get_db():
 db = get_db()
 TARGET_COLLECTION = "apple_upgrade_predictions"
 
-# Model Loigc
+# Model Logic
 
 def compute_behaviorals(DA, BH, TI, ENG, PU, SI, PS):
     """
@@ -463,18 +463,18 @@ with tab_overview:
 
     c1, c2 = st.columns([2, 1])
 
-    # -------- Left: Forcing term by user --------
+    # -------- Left: Forcing term distribution (histogram) --------
     with c1:
-        st.markdown("**Forcing term by user (sorted)**")
+        st.markdown("**Forcing term distribution**")
         if not filtered_df.empty:
-            line_df = (
-                filtered_df
-                .sort_values("forcing_term")
-                .set_index("id")[["forcing_term"]]
-            )
-            st.line_chart(line_df)
+            arr = filtered_df["forcing_term"].to_numpy()
+            fig_hist, ax_hist = plt.subplots()
+            ax_hist.hist(arr, bins=10, edgecolor="black")
+            ax_hist.set_xlabel("Forcing term")
+            ax_hist.set_ylabel("Frequency")
+            st.pyplot(fig_hist)
         else:
-            st.info("No users match the current filter.")
+            st.info("No forcing term values for the current filter.")
 
     # -------- Right: Decision breakdown pie --------
     with c2:
@@ -496,18 +496,6 @@ with tab_overview:
             st.pyplot(fig)
         else:
             st.info("No decision data for the current filter.")
-
-    # Optional: simple histogram under both
-    st.markdown("#### Forcing term distribution")
-    if not filtered_df.empty:
-        arr = filtered_df["forcing_term"].to_numpy()
-        fig_hist, ax_hist = plt.subplots()
-        ax_hist.hist(arr, bins=10, edgecolor="black")
-        ax_hist.set_xlabel("Forcing term")
-        ax_hist.set_ylabel("Frequency")
-        st.pyplot(fig_hist)
-    else:
-        st.info("No forcing term values for the current filter.")
 
 
 # ===================== TAB 2: PERSONA INSIGHTS =====================
@@ -610,6 +598,7 @@ with tab_crm:
             st.info("This filtered segment has no CRM actions.")
     else:
         st.info("No CRM action data available. Upload and compute data first.")
+
 
 # ===================== TAB 4: USER EXPLORER =====================
 def radar_chart(scores_dict, title="Persona Radar"):
