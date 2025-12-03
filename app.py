@@ -129,6 +129,7 @@ def compute_forcing_term(DA, BH, TI, ENG, PU, SI, PS):
 
 
 def classify_forcing_term(value: float) -> str:
+    """Map forcing term → upgrade intention segment."""
     value = round(value, 2)
     if value >= 0.70:
         return "Upgrade Soon"
@@ -139,80 +140,80 @@ def classify_forcing_term(value: float) -> str:
 
 
 # ---------------- ACTION LAYER (CRM / BUSINESS RULES) ----------------
-def recommend_actions(persona: str, decision: str):
+def recommend_actions(persona: str, intention: str):
     """
     Simple rule-based action trigger.
-    Persona + Decision -> Recommended CRM actions.
+    Persona + Intention -> Recommended CRM actions.
     """
     persona = (persona or "").strip()
-    decision = (decision or "").strip()
+    intention = (intention or "").strip()
 
     # Default fallback
     actions = ["Send general follow-up message."]
 
     if persona == "Loyalist":
-        if decision == "Upgrade Soon":
+        if intention == "Upgrade Soon":
             actions = [
                 "Send VIP upgrade offer.",
                 "Give small trade-in bonus."
             ]
-        elif decision == "Delay Upgrade":
+        elif intention == "Delay Upgrade":
             actions = [
                 "Send gentle reminder.",
                 "Offer small accessory promo."
             ]
-        else:  # Churn
+        else:  # Churn Risk
             actions = [
                 "Ask for feedback.",
                 "Send loyalty thank-you coupon."
             ]
 
     elif persona == "Fan":
-        if decision == "Upgrade Soon":
+        if intention == "Upgrade Soon":
             actions = [
                 "Promote bundle deal.",
                 "Highlight camera/battery benefits."
             ]
-        elif decision == "Delay Upgrade":
+        elif intention == "Delay Upgrade":
             actions = [
                 "Send value explanation.",
                 "Offer small trade-in top-up."
             ]
-        else:  # Churn
+        else:  # Churn Risk
             actions = [
                 "Suggest cheaper model.",
                 "Keep light reminders only."
             ]
 
     elif persona == "Switcher":
-        if decision == "Upgrade Soon":
+        if intention == "Upgrade Soon":
             actions = [
                 "Highlight Apple ecosystem features.",
                 "Give competitive trade-in value."
             ]
-        elif decision == "Delay Upgrade":
+        elif intention == "Delay Upgrade":
             actions = [
                 "Retarget with comparison ads.",
                 "Give limited-time trade-in bonus."
             ]
-        else:  # Churn
+        else:  # Churn Risk
             actions = [
                 "Send win-back offer.",
                 "Highlight long-term resale value."
             ]
 
     elif persona == "Drifter":
-        if decision == "Upgrade Soon":
+        if intention == "Upgrade Soon":
             actions = [
                 "Suggest mid-tier or refurbished models.",
                 "Keep communication simple."
             ]
-        elif decision == "Delay Upgrade":
+        elif intention == "Delay Upgrade":
             actions = [
                 "Send occasional generic promo.",
                 "Suggest older/cheaper models."
             ]
-        else:  # Churn
+        else:  # Churn Risk
             actions = [
                 "Send final small discount.",
                 "Reduce marketing cost for this user."
@@ -227,6 +228,8 @@ def load_data_from_firestore():
     rows = []
     for doc in docs:
         d = doc.to_dict()
+        # Support both new ("intention") and legacy ("decision") field names
+        intention_val = d.get("intention", d.get("decision"))
         rows.append({
             "id": d.get("source_id", doc.id),
             "DA": d.get("DA"),
@@ -237,7 +240,7 @@ def load_data_from_firestore():
             "SI": d.get("SI"),
             "PS": d.get("PS"),
             "forcing_term": d.get("forcing_term"),
-            "decision": d.get("decision"),
+            "intention": intention_val,
             "created_at": d.get("created_at"),
             # may or may not exist yet:
             "crm_actions": d.get("crm_actions"),
@@ -270,7 +273,7 @@ def load_data_from_firestore():
         if stored_actions:
             actions_col.append(stored_actions)
         else:
-            actions_col.append(recommend_actions(p, r.decision))
+            actions_col.append(recommend_actions(p, r.intention))
 
     df["persona"] = personas
     df["persona_scores"] = score_list
@@ -296,7 +299,7 @@ st.markdown(
 
 # ---------------- MAIN APP ----------------
 st.title(" Apple Upgrade Prediction Dashboard")
-st.caption("From behavioral inputs → Personas → Forcing Term → CRM Actions")
+st.caption("From behavioral inputs → Personas → Forcing Term → Intention → CRM Actions")
 
 with st.sidebar:
     st.markdown("### Data controls")
@@ -323,7 +326,7 @@ with tab_loader:
     st.markdown(
         """
         1. Upload your raw CSV  
-        2. We compute: forcing_term, decision, persona, CRM actions  
+        2. We compute: forcing_term, intention, persona, CRM actions  
         3. Everything is saved into Firestore
 
         **Required columns:** `id, DA, BH, TI, ENG, PU, SI, PS`
@@ -355,19 +358,20 @@ with tab_loader:
 
                             ft_raw = compute_forcing_term(DA, BH, TI, ENG, PU, SI, PS)
                             ft = round(ft_raw, 3)
-                            decision = classify_forcing_term(ft)
+                            intention = classify_forcing_term(ft)
 
                             dominant, scores, _, _, _ = compute_persona(
                                 DA, BH, TI, ENG, PU, SI, PS
                             )
 
-                            crm_actions = recommend_actions(dominant, decision)
+                            crm_actions = recommend_actions(dominant, intention)
 
                             out_doc = {
                                 "DA": DA, "BH": BH, "TI": TI, "ENG": ENG,
                                 "PU": PU, "SI": SI, "PS": PS,
                                 "forcing_term": ft,
-                                "decision": decision,
+                                "intention": intention,
+                                "decision": intention,  # legacy alias (optional)
                                 "persona": dominant,
                                 "persona_scores": scores,
                                 "crm_actions": crm_actions,
@@ -403,11 +407,11 @@ if df.empty:
 # ---------------- FILTERS (GLOBAL) ----------------
 st.sidebar.markdown("### Filters")
 
-decision_options = ["Upgrade Soon", "Delay Upgrade", "Churn Risk"]
-selected_decisions = st.sidebar.multiselect(
-    "Decision segment",
-    decision_options,
-    default=decision_options
+intention_options = ["Upgrade Soon", "Delay Upgrade", "Churn Risk"]
+selected_intentions = st.sidebar.multiselect(
+    "Intention segment",
+    intention_options,
+    default=intention_options
 )
 
 persona_options = ["Loyalist", "Fan", "Switcher", "Drifter"]
@@ -429,7 +433,7 @@ forcing_min, forcing_max = st.sidebar.slider(
 )
 
 filtered_df = df[
-    df["decision"].isin(selected_decisions)
+    df["intention"].isin(selected_intentions)
     & df["persona"].isin(selected_personas)
     & (df["forcing_term"] >= forcing_min)
     & (df["forcing_term"] <= forcing_max)
@@ -440,9 +444,9 @@ filtered_df = df[
 total_users = len(filtered_df)
 avg_forcing = filtered_df["forcing_term"].mean() if total_users else 0
 
-upgrade_count = int((filtered_df["decision"] == "Upgrade Soon").sum())
-delay_count   = int((filtered_df["decision"] == "Delay Upgrade").sum())
-churn_count   = int((filtered_df["decision"] == "Churn Risk").sum())
+upgrade_count = int((filtered_df["intention"] == "Upgrade Soon").sum())
+delay_count   = int((filtered_df["intention"] == "Delay Upgrade").sum())
+churn_count   = int((filtered_df["intention"] == "Churn Risk").sum())
 
 upgrade_rate = upgrade_count / total_users * 100 if total_users else 0
 delay_rate   = delay_count / total_users * 100 if total_users else 0
@@ -459,7 +463,7 @@ st.markdown("---")
 
 # ===================== TAB 1: OVERVIEW =====================
 with tab_overview:
-    st.subheader("Segment Forcing Term & Decisions")
+    st.subheader("Segment Forcing Term & Intentions")
 
     c1, c2 = st.columns([2, 1])
 
@@ -476,26 +480,26 @@ with tab_overview:
         else:
             st.info("No forcing term values for the current filter.")
 
-    # -------- Right: Decision breakdown pie --------
+    # -------- Right: Intention breakdown pie --------
     with c2:
-        st.markdown("**Decision breakdown**")
+        st.markdown("**Intention breakdown**")
         if not filtered_df.empty:
-            decision_counts = (
-                filtered_df["decision"]
+            intention_counts = (
+                filtered_df["intention"]
                 .value_counts()
-                .reindex(decision_options, fill_value=0)
+                .reindex(intention_options, fill_value=0)
             )
             fig, ax = plt.subplots()
             ax.pie(
-                decision_counts.values,
-                labels=decision_counts.index,
+                intention_counts.values,
+                labels=intention_counts.index,
                 autopct="%1.0f%%",
                 startangle=90,
             )
             ax.axis("equal")
             st.pyplot(fig)
         else:
-            st.info("No decision data for the current filter.")
+            st.info("No intention data for the current filter.")
 
 
 # ===================== TAB 2: PERSONA INSIGHTS =====================
@@ -527,16 +531,7 @@ with tab_persona:
         else:
             st.info("No data to show behavioral profiles.")
 
-    st.markdown("---")
-    st.markdown("### High-level Action Playbook")
-    st.markdown(
-        """
-        - **Loyalist** → Reward & retain (VIP upgrades, loyalty perks).  
-        - **Fan** → Convince & support (installments, value-focused messaging).  
-        - **Switcher** → Stabilize (ecosystem benefits, trade-in competitiveness).  
-        - **Drifter** → Low-cost touch (generic promos, budget models, limited spend).
-        """
-    )
+    # High-level Action Playbook section removed as requested
 
 
 # ===================== TAB 3: CRM PLANNER =====================
@@ -585,7 +580,7 @@ with tab_crm:
 
             # ---------- Export filtered segment ----------
             st.markdown("### 📥 Download This Segment")
-            export_df = filtered_df[["id", "persona", "decision", "crm_actions"]].copy()
+            export_df = filtered_df[["id", "persona", "intention", "crm_actions"]].copy()
             csv = export_df.to_csv(index=False).encode("utf-8")
             st.download_button(
                 "Download CRM Segment as CSV",
@@ -629,13 +624,13 @@ with tab_user:
     user_row = filtered_df[filtered_df["id"] == selected_user_id].iloc[0]
     persona = user_row["persona"]
     scores  = user_row["persona_scores"]
-    decision = user_row["decision"]
+    intention = user_row["intention"]
 
     left, right = st.columns([1, 1.2])
 
     with left:
         st.markdown(f"**User ID:** `{selected_user_id}`")
-        st.markdown(f"**Decision:** {decision}")
+        st.markdown(f"**Intention:** {intention}")
         st.markdown(f"**Forcing term:** `{user_row['forcing_term']:.3f}`")
         st.markdown(f"**Persona:** **{persona}**")
 
@@ -652,7 +647,7 @@ with tab_user:
         if stored_actions:
             action_list = stored_actions
         else:
-            action_list = recommend_actions(persona, decision)
+            action_list = recommend_actions(persona, intention)
 
         for a in action_list:
             st.markdown(f"- {a}")
