@@ -12,10 +12,9 @@ st.set_page_config(
     layout="wide"
 )
 
-# FIRESTORE SETUP
+# FIREBASE ADMIN SDK (API)
 @st.cache_resource
 def get_db():
-    """Initialize Firebase Admin only once."""
     if not firebase_admin._apps:
         firebase_creds = dict(st.secrets["firebase"])
         cred = credentials.Certificate(firebase_creds)
@@ -224,11 +223,13 @@ def recommend_actions(persona: str, intention: str):
 # DATA LOADING
 @st.cache_data
 def load_data_from_firestore():
+    
+    # API call → reads all documents in the collection
+
     docs = list(db.collection(TARGET_COLLECTION).stream())
     rows = []
     for doc in docs:
         d = doc.to_dict()
-        # Support both new ("intention") and legacy ("decision") field names
         intention_val = d.get("intention", d.get("decision"))
         rows.append({
             "id": d.get("source_id", doc.id),
@@ -242,7 +243,6 @@ def load_data_from_firestore():
             "forcing_term": d.get("forcing_term"),
             "intention": intention_val,
             "created_at": d.get("created_at"),
-            # may or may not exist yet:
             "crm_actions": d.get("crm_actions"),
         })
 
