@@ -159,64 +159,64 @@ def recommend_actions(persona: str, intention: str):
             ]
         elif intention == "Delay Upgrade":
             actions = [
-                "Send gentle reminder.",
-                "Offer small accessory promo."
+                "Send reminder.",
+                "Offer a small accessory promotion."
             ]
         else:  # Churn Risk
             actions = [
-                "Ask for feedback.",
-                "Send loyalty thank-you coupon."
+                "Request feedback.",
+                "Send a loyalty thank-you coupon."
             ]
 
     elif persona == "Fan":
         if intention == "Upgrade Soon":
             actions = [
-                "Promote bundle deal.",
-                "Highlight camera/battery benefits."
+                "Promote a device bundle.",
+                "Highlight key feature improvements."
             ]
         elif intention == "Delay Upgrade":
             actions = [
-                "Send value explanation.",
-                "Offer small trade-in top-up."
+                "Explain value of upgrading.",
+                "Offer a modest trade-in top-up."
             ]
         else:  # Churn Risk
             actions = [
-                "Suggest cheaper model.",
-                "Keep light reminders only."
+                "Suggest a lower-priced model.",
+                "Reduce communication frequency."
             ]
 
     elif persona == "Switcher":
         if intention == "Upgrade Soon":
             actions = [
-                "Highlight Apple ecosystem features.",
-                "Give competitive trade-in value."
+                "Highlight ecosystem benefits.",
+                "Provide competitive trade-in value."
             ]
         elif intention == "Delay Upgrade":
             actions = [
-                "Retarget with comparison ads.",
-                "Give limited-time trade-in bonus."
+                "Send comparison messaging.",
+                "Offer a limited-time trade-in promotion."
             ]
         else:  # Churn Risk
             actions = [
-                "Send win-back offer.",
-                "Highlight long-term resale value."
+                "Send a win-back offer.",
+                "Highlight long-term device value."
             ]
 
     elif persona == "Drifter":
         if intention == "Upgrade Soon":
             actions = [
-                "Suggest mid-tier or refurbished models.",
+                "Suggest mid-range or refurbished devices.",
                 "Keep communication simple."
             ]
         elif intention == "Delay Upgrade":
             actions = [
-                "Send occasional generic promo.",
-                "Suggest older/cheaper models."
+                "Send occasional generic promotion.",
+                "Suggest older or budget models."
             ]
         else:  # Churn Risk
             actions = [
-                "Send final small discount.",
-                "Reduce marketing cost for this user."
+                "Send a final discount offer.",
+                "Limit further marketing spend for this user."
             ]
 
     return actions
@@ -298,30 +298,30 @@ st.markdown(
 )
 
 # ---------------- MAIN APP ----------------
-st.title(" Apple Upgrade Prediction Dashboard")
+st.title("Apple Upgrade Prediction Dashboard")
 
 with st.sidebar:
     st.markdown("### Data controls")
-    if st.button("Refresh Firestore"):
+    if st.button("Refresh data from Firestore"):
         load_data_from_firestore.clear()
         st.rerun()
 
 df = load_data_from_firestore()
 
 tabs = st.tabs([
-    " Overview",
-    " Persona Insights",
-    " CRM Planner",
-    " User Explorer",
-    " Data Loader"
+    "Overview",
+    "Persona Insights",
+    "CRM Planner",
+    "User Explorer",
+    "Data Loader"
 ])
 tab_overview, tab_persona, tab_crm, tab_user, tab_loader = tabs
 
 
 # ===================== TAB 5: DATA LOADER =====================
 with tab_loader:
-    st.subheader("CSV → Compute → Save to Firestore")
-    uploaded = st.file_uploader("Upload CSV", type=["csv"])
+    st.subheader("Import CSV and Save to Firestore")
+    uploaded = st.file_uploader("Upload CSV file", type=["csv"])
 
     if uploaded:
         raw_df = pd.read_csv(uploaded)
@@ -334,9 +334,9 @@ with tab_loader:
         if missing:
             st.error(f"Missing required columns: {missing}")
         else:
-            if st.button("Compute & Save"):
+            if st.button("Compute and save"):
                 ok = 0
-                with st.spinner("Computing + saving..."):
+                with st.spinner("Computing and saving documents..."):
                     for _, r in raw_df.iterrows():
                         try:
                             user_id = str(r["id"])
@@ -374,21 +374,21 @@ with tab_loader:
 
                 load_data_from_firestore.clear()
                 st.success(f"Saved {ok} users to Firestore.")
-                st.info("Go to the other tabs to explore.")
+                st.info("Use the other tabs to review the results.")
     else:
-        st.info("Upload a CSV to compute and push results.")
+        st.info("Upload a CSV file to compute and save results.")
 
 
 # ===================== IF NO DATA YET =====================
 if df.empty:
     with tab_overview:
-        st.warning("No computed documents found yet. Use the Data Loader tab to upload CSV.")
+        st.warning("No computed documents found. Use the Data Loader tab to upload and process a CSV file.")
     with tab_persona:
-        st.info("Persona insights will appear after CSV upload.")
+        st.info("Persona insights will be available after data is loaded.")
     with tab_user:
-        st.info("User explorer will appear after CSV upload.")
+        st.info("User Explorer will be available after data is loaded.")
     with tab_crm:
-        st.info("CRM planner needs data from Firestore.")
+        st.info("CRM Planner will be available after data is loaded.")
     st.stop()
 
 
@@ -397,7 +397,7 @@ st.sidebar.markdown("### Filters")
 
 intention_options = ["Upgrade Soon", "Delay Upgrade", "Churn Risk"]
 selected_intentions = st.sidebar.multiselect(
-    "Intention segment",
+    "Upgrade intention",
     intention_options,
     default=intention_options
 )
@@ -442,16 +442,16 @@ churn_rate   = churn_count / total_users * 100 if total_users else 0
 
 k1, k2, k3, k4 = st.columns(4)
 with k1: st.metric("Users (filtered)", total_users)
-with k2: st.metric("Avg forcing term", f"{avg_forcing:.3f}")
-with k3: st.metric("Upgrade Soon", f"{upgrade_rate:.1f}%")
-with k4: st.metric("Delay Upgrade", f"{delay_rate:.1f}%")
-st.write(f"**Churn Risk:** {churn_count} users ({churn_rate:.1f}%)")
+with k2: st.metric("Average forcing term", f"{avg_forcing:.3f}")
+with k3: st.metric("Upgrade Soon (%)", f"{upgrade_rate:.1f}%")
+with k4: st.metric("Delay Upgrade (%)", f"{delay_rate:.1f}%")
+st.write(f"Churn Risk: {churn_count} users ({churn_rate:.1f}%)")
 st.markdown("---")
 
 
 # ===================== TAB 1: OVERVIEW =====================
 with tab_overview:
-    st.subheader("Segment Forcing Term & Intentions")
+    st.subheader("Forcing Term and Intention Overview")
 
     c1, c2 = st.columns([2, 1])
 
@@ -463,14 +463,14 @@ with tab_overview:
             fig_hist, ax_hist = plt.subplots()
             ax_hist.hist(arr, bins=10, edgecolor="black")
             ax_hist.set_xlabel("Forcing term")
-            ax_hist.set_ylabel("Frequency")
+            ax_hist.set_ylabel("Number of users")
             st.pyplot(fig_hist)
         else:
             st.info("No forcing term values for the current filter.")
 
     # -------- Right: Intention breakdown pie --------
     with c2:
-        st.markdown("**Prediction breakdown**")
+        st.markdown("**Intention breakdown**")
         if not filtered_df.empty:
             intention_counts = (
                 filtered_df["intention"]
@@ -505,26 +505,24 @@ with tab_persona:
         st.pyplot(figp)
 
     with c2:
-        st.markdown("**Mean forcing term by persona**")
+        st.markdown("**Average forcing term by persona**")
         persona_means = filtered_df.groupby("persona")[["forcing_term"]].mean()
         persona_means = persona_means.reindex(persona_options)
         st.bar_chart(persona_means, use_container_width=True)
 
-    with st.expander("Show behavioral profile per persona (Need / Bonding / Hesitation)"):
+    with st.expander("Behavioral profile by persona (Need / Bonding / Hesitation)"):
         if not filtered_df.empty:
             beh_means = filtered_df.groupby("persona")[["Need", "Bonding", "Hesitation"]].mean()
             beh_means = beh_means.reindex(persona_options)
             st.bar_chart(beh_means, use_container_width=True)
-            st.caption("Need↑ + Bonding↑ push toward Upgrade. Hesitation↑ pushes toward Delay/Churn.")
+            st.caption("Higher Need and Bonding are linked to upgrades; higher Hesitation is linked to delay or churn.")
         else:
-            st.info("No data to show behavioral profiles.")
-
-    # High-level Action Playbook section removed as requested
+            st.info("No data available to show behavioral profiles.")
 
 
 # ===================== TAB 3: CRM PLANNER =====================
 with tab_crm:
-    st.subheader("📧 CRM Planner – Recommended Actions for Your Segment")
+    st.subheader("CRM Planner")
 
     if "crm_actions" in filtered_df.columns and not filtered_df.empty:
         # ---------- Collect all actions from filtered users ----------
@@ -539,7 +537,7 @@ with tab_crm:
             action_series = pd.Series(all_actions)
             action_counts = action_series.value_counts().sort_values(ascending=False)
 
-            st.markdown("### Top CRM Actions Across Selected Segment")
+            st.markdown("### CRM actions in this segment")
 
             # ---------- Show table of actions + counts ----------
             st.dataframe(
@@ -547,40 +545,40 @@ with tab_crm:
                 use_container_width=True,
             )
 
-            # ---------- Horizontal Bar Chart (CLEAN) ----------
+            # ---------- Horizontal Bar Chart ----------
             import textwrap
 
             top_n = min(8, len(action_counts))  # Show only top 8 actions
-            subset = action_counts.head(top_n)[::-1]  # Reverse for nicer top-down layout
+            subset = action_counts.head(top_n)[::-1]  # Reverse for top-down layout
 
             wrapped_labels = [textwrap.fill(lbl, width=30) for lbl in subset.index]
 
             fig_act, ax_act = plt.subplots(figsize=(10, 6))
-            ax_act.barh(range(len(subset)), subset.values, color="#4C8BF5")
+            ax_act.barh(range(len(subset)), subset.values)
             ax_act.set_yticks(range(len(subset)))
             ax_act.set_yticklabels(wrapped_labels)
             ax_act.set_xlabel("Count")
-            ax_act.set_title("Top CRM Actions (Horizontal)")
+            ax_act.set_title("Top CRM actions")
             ax_act.grid(axis="x", linestyle="--", alpha=0.4)
 
             plt.tight_layout()
             st.pyplot(fig_act)
 
             # ---------- Export filtered segment ----------
-            st.markdown("### 📥 Download This Segment")
+            st.markdown("### Export segment")
             export_df = filtered_df[["id", "persona", "intention", "crm_actions"]].copy()
             csv = export_df.to_csv(index=False).encode("utf-8")
             st.download_button(
-                "Download CRM Segment as CSV",
+                "Download CSV",
                 data=csv,
                 file_name="crm_segment_export.csv",
                 mime="text/csv",
             )
 
         else:
-            st.info("This filtered segment has no CRM actions.")
+            st.info("This segment currently has no CRM actions.")
     else:
-        st.info("No CRM action data available. Upload and compute data first.")
+        st.info("No CRM action data available. Load and compute data first.")
 
 
 # ===================== TAB 4: USER EXPLORER =====================
@@ -617,19 +615,21 @@ with tab_user:
     left, right = st.columns([1, 1.2])
 
     with left:
-        st.markdown(f"**User ID:** `{selected_user_id}`")
-        st.markdown(f"**Intention:** {intention}")
-        st.markdown(f"**Forcing term:** `{user_row['forcing_term']:.3f}`")
-        st.markdown(f"**Persona:** **{persona}**")
+        st.markdown("**User summary**")
+        st.markdown(f"- User ID: `{selected_user_id}`")
+        st.markdown(f"- Intention: {intention}")
+        st.markdown(f"- Forcing term: `{user_row['forcing_term']:.3f}`")
+        st.markdown(f"- Persona: **{persona}**")
 
         beh_df = pd.DataFrame({
             "Factor": ["Need", "Bonding", "Hesitation"],
             "Value": [user_row["Need"], user_row["Bonding"], user_row["Hesitation"]]
         })
+        st.markdown("**Behavioral factors**")
         st.bar_chart(beh_df, x="Factor", y="Value", use_container_width=True)
 
         st.markdown("---")
-        st.markdown("### Recommended CRM Actions")
+        st.markdown("**Recommended CRM actions**")
 
         stored_actions = user_row.get("crm_actions")
         if stored_actions:
@@ -641,6 +641,6 @@ with tab_user:
             st.markdown(f"- {a}")
 
     with right:
-        st.markdown("**Persona radar scores (H1–H4)**")
-        fig = radar_chart(scores, title=f"{persona} Profile")
+        st.markdown("**Persona radar (H1–H4)**")
+        fig = radar_chart(scores, title=f"{persona} profile")
         st.pyplot(fig)
