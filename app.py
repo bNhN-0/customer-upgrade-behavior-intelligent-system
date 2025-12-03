@@ -397,7 +397,7 @@ st.sidebar.markdown("### Filters")
 
 intention_options = ["Upgrade Soon", "Delay Upgrade", "Churn Risk"]
 selected_intentions = st.sidebar.multiselect(
-    "Upgrade intention",
+    "Output Prediction",
     intention_options,
     default=intention_options
 )
