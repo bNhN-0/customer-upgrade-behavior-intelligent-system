@@ -428,7 +428,6 @@ filtered_df = df[
 ].copy()
 
 
-# ---------------- KPIs (top of page) ----------------
 total_users = len(filtered_df)
 avg_forcing = filtered_df["forcing_term"].mean() if total_users else 0
 
@@ -440,18 +439,24 @@ upgrade_rate = upgrade_count / total_users * 100 if total_users else 0
 delay_rate   = delay_count / total_users * 100 if total_users else 0
 churn_rate   = churn_count / total_users * 100 if total_users else 0
 
-k1, k2, k3, k4 = st.columns(4)
-with k1: st.metric("Users (filtered)", total_users)
-with k2: st.metric("Average forcing term", f"{avg_forcing:.3f}")
-with k3: st.metric("Upgrade Soon (%)", f"{upgrade_rate:.1f}%")
-with k4: st.metric("Delay Upgrade (%)", f"{delay_rate:.1f}%")
-st.write(f"Churn Risk: {churn_count} users ({churn_rate:.1f}%)")
+c1, c2, c3, c4 = st.columns(4)
+with c1:
+    st.metric("Users (filtered)", f"{total_users}")
+with c2:
+    st.metric("Upgrade Soon", f"{upgrade_count} ({upgrade_rate:.1f}%)")
+with c3:
+    st.metric("Delay Upgrade", f"{delay_count} ({delay_rate:.1f}%)")
+with c4:
+    st.metric("Churn Risk", f"{churn_count} ({churn_rate:.1f}%)")
+
+st.markdown(f"**Average forcing term:** `{avg_forcing:.3f}`")
 st.markdown("---")
+
 
 
 # ===================== TAB 1: OVERVIEW =====================
 with tab_overview:
-    st.subheader("Forcing Term and Intention Overview")
+    st.subheader("Forcing Term and Prediction Overview")
 
     c1, c2 = st.columns([2, 1])
 
@@ -470,7 +475,7 @@ with tab_overview:
 
     # -------- Right: Intention breakdown pie --------
     with c2:
-        st.markdown("**Intention breakdown**")
+        st.markdown("**Prediction breakdown**")
         if not filtered_df.empty:
             intention_counts = (
                 filtered_df["intention"]
@@ -520,12 +525,11 @@ with tab_persona:
             st.info("No data available to show behavioral profiles.")
 
 
-# ===================== TAB 3: CRM PLANNER =====================
+# TAB 3: CRM PLANNER ==
 with tab_crm:
     st.subheader("CRM Planner")
 
     if "crm_actions" in filtered_df.columns and not filtered_df.empty:
-        # ---------- Collect all actions from filtered users ----------
         all_actions = []
         for actions in filtered_df["crm_actions"]:
             if isinstance(actions, (list, tuple)):
@@ -539,17 +543,16 @@ with tab_crm:
 
             st.markdown("### CRM actions in this segment")
 
-            # ---------- Show table of actions + counts ----------
             st.dataframe(
                 action_counts.rename("Count").to_frame(),
                 use_container_width=True,
             )
 
-            # ---------- Horizontal Bar Chart ----------
+            #  Horizontal Bar Chart 
             import textwrap
 
-            top_n = min(8, len(action_counts))  # Show only top 8 actions
-            subset = action_counts.head(top_n)[::-1]  # Reverse for top-down layout
+            top_n = min(8, len(action_counts))  
+            subset = action_counts.head(top_n)[::-1]  
 
             wrapped_labels = [textwrap.fill(lbl, width=30) for lbl in subset.index]
 
@@ -564,7 +567,6 @@ with tab_crm:
             plt.tight_layout()
             st.pyplot(fig_act)
 
-            # ---------- Export filtered segment ----------
             st.markdown("### Export segment")
             export_df = filtered_df[["id", "persona", "intention", "crm_actions"]].copy()
             csv = export_df.to_csv(index=False).encode("utf-8")
