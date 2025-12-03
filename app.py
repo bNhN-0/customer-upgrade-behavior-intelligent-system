@@ -299,7 +299,6 @@ st.markdown(
 
 # ---------------- MAIN APP ----------------
 st.title(" Apple Upgrade Prediction Dashboard")
-st.caption("From behavioral inputs → Personas → Forcing Term → Intention → CRM Actions")
 
 with st.sidebar:
     st.markdown("### Data controls")
@@ -322,17 +321,6 @@ tab_overview, tab_persona, tab_crm, tab_user, tab_loader = tabs
 # ===================== TAB 5: DATA LOADER =====================
 with tab_loader:
     st.subheader("CSV → Compute → Save to Firestore")
-
-    st.markdown(
-        """
-        1. Upload your raw CSV  
-        2. We compute: forcing_term, intention, persona, CRM actions  
-        3. Everything is saved into Firestore
-
-        **Required columns:** `id, DA, BH, TI, ENG, PU, SI, PS`
-        """
-    )
-
     uploaded = st.file_uploader("Upload CSV", type=["csv"])
 
     if uploaded:
@@ -482,7 +470,7 @@ with tab_overview:
 
     # -------- Right: Intention breakdown pie --------
     with c2:
-        st.markdown("**Intention breakdown**")
+        st.markdown("**Prediction breakdown**")
         if not filtered_df.empty:
             intention_counts = (
                 filtered_df["intention"]
