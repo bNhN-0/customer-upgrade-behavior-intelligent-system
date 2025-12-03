@@ -12,7 +12,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# ---------------- FIRESTORE SETUP ----------------
+# FIRESTORE SETUP
 @st.cache_resource
 def get_db():
     """Initialize Firebase Admin only once."""
@@ -139,7 +139,7 @@ def classify_forcing_term(value: float) -> str:
         return "Churn Risk"
 
 
-# ---------------- ACTION LAYER (CRM / BUSINESS RULES) ----------------
+# ACTION LAYER (CRM / BUSINESS RULES)
 def recommend_actions(persona: str, intention: str):
     """
     Simple rule-based action trigger.
@@ -221,7 +221,7 @@ def recommend_actions(persona: str, intention: str):
 
     return actions
 
-# ---------------- DATA LOADING ----------------
+# DATA LOADING
 @st.cache_data
 def load_data_from_firestore():
     docs = list(db.collection(TARGET_COLLECTION).stream())
@@ -285,7 +285,7 @@ def load_data_from_firestore():
     return df
 
 
-# ---------------- UI STYLE ----------------
+#  UI STYLE
 st.markdown(
     """
     <style>
@@ -297,7 +297,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ---------------- MAIN APP ----------------
+# MAIN APP
 st.title("Apple Upgrade Prediction Dashboard")
 
 with st.sidebar:
@@ -318,7 +318,7 @@ tabs = st.tabs([
 tab_overview, tab_persona, tab_crm, tab_user, tab_loader = tabs
 
 
-# ===================== TAB 5: DATA LOADER =====================
+# TAB 5: DATA LOADER 
 with tab_loader:
     st.subheader("Import CSV and Save to Firestore")
     uploaded = st.file_uploader("Upload CSV file", type=["csv"])
@@ -379,7 +379,6 @@ with tab_loader:
         st.info("Upload a CSV file to compute and save results.")
 
 
-# ===================== IF NO DATA YET =====================
 if df.empty:
     with tab_overview:
         st.warning("No computed documents found. Use the Data Loader tab to upload and process a CSV file.")
@@ -392,7 +391,6 @@ if df.empty:
     st.stop()
 
 
-# ---------------- FILTERS (GLOBAL) ----------------
 st.sidebar.markdown("### Filters")
 
 intention_options = ["Upgrade Soon", "Delay Upgrade", "Churn Risk"]
