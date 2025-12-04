@@ -452,7 +452,7 @@ st.markdown("---")
 
 
 
-# ===================== TAB 1: OVERVIEW =====================
+#  TAB 1: OVERVIEW 
 with tab_overview:
     st.subheader("Forcing Term and Prediction Overview")
 
@@ -493,7 +493,7 @@ with tab_overview:
             st.info("No intention data for the current filter.")
 
 
-# ===================== TAB 2: PERSONA INSIGHTS =====================
+#  TAB 2: PERSONA INSIGHTS 
 with tab_persona:
     st.subheader("Persona Insights")
 
@@ -581,7 +581,7 @@ with tab_crm:
         st.info("No CRM action data available. Load and compute data first.")
 
 
-# ===================== TAB 4: USER EXPLORER =====================
+#  TAB 4: USER EXPLORER 
 def radar_chart(scores_dict, title="Persona Radar"):
     labels = list(scores_dict.keys())
     values = list(scores_dict.values())
