@@ -1,291 +1,381 @@
-import streamlit as st
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
+import textwrap
 
 import firebase_admin
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import streamlit as st
 from firebase_admin import credentials, firestore
 
 st.set_page_config(
-    page_title="Apple Upgrade Prediction Dashboard",
+    page_title="Customer Device Upgrade Intent Dashboard",
     page_icon="",
-    layout="wide"
+    layout="wide",
 )
 
-# FIREBASE ADMIN SDK (API)
+DATASET_PATH = "customer_upgrade_behavior.csv"
+TARGET_COLLECTION = "customer_upgrade_predictions"
+INPUT_COLS = ["DA", "BH", "TI", "ENG", "PU", "SI", "PS"]
+INTENTION_OPTIONS = ["Upgrade Soon", "Delay Upgrade", "Churn Risk"]
+PERSONA_OPTIONS = ["Loyalist", "Fan", "Switcher", "Drifter"]
+
+
 @st.cache_resource
 def get_db():
-    if not firebase_admin._apps:
-        firebase_creds = dict(st.secrets["firebase"])
-        cred = credentials.Certificate(firebase_creds)
-        firebase_admin.initialize_app(cred)
-    return firestore.client()
+    if "firebase" not in st.secrets:
+        return None
+
+    try:
+        if not firebase_admin._apps:
+            firebase_creds = dict(st.secrets["firebase"])
+            cred = credentials.Certificate(firebase_creds)
+            firebase_admin.initialize_app(cred)
+        return firestore.client()
+    except Exception:
+        return None
+
 
 db = get_db()
-TARGET_COLLECTION = "apple_upgrade_predictions"
 
-# Model Logic
+
+def _clip01(x):
+    return float(np.clip(x, 0.05, 0.95))
+
 
 def compute_behaviorals(DA, BH, TI, ENG, PU, SI, PS):
-    """
-    Layer 1: Behavioral Extraction
-    7 inputs -> (Need, Bonding, Hesitation)
-    """
-    N = (DA + TI + ENG + PU + SI) / 5.0
-    B = (ENG + PU + SI) / 3.0
-    H = (
-        (1 - DA) + BH + (1 - TI) + (1 - ENG) +
-        (1 - PU) + (1 - SI) + PS * (1 - TI)
-    ) / 7.0
+    alpha_N = 0.46
+    beta_N = 0.86
+    lambda_N = 1.00
+
+    N_support = (
+        alpha_N * (DA + BH)
+        + (1 - alpha_N)
+        * (beta_N * (TI + PU + SI) + (1 - beta_N) * lambda_N * ENG)
+    )
+    N = _clip01((1 - PS) * N_support)
+
+    alpha_B = 0.38
+    beta_B = 0.80
+    lambda_B = 1.00
+
+    B_support = (
+        alpha_B * ENG
+        + (1 - alpha_B)
+        * (beta_B * (PU + SI) + (1 - beta_B) * lambda_B * TI)
+    )
+    B = _clip01((1 - PS) * B_support)
+
+    alpha_H = 0.27
+    beta_H = 0.75
+    lambda_H = 0.50
+
+    H_reducer = (
+        alpha_H * TI
+        + (1 - alpha_H)
+        * (beta_H * (DA + BH + PU) + (1 - beta_H) * lambda_H * (ENG + SI))
+    )
+    H_reducer = _clip01(H_reducer)
+    H = _clip01(PS * (1 - H_reducer))
+
     return N, B, H
 
 
-def _softmax(x, beta=3.5):
-    """
-    Stable softmax for persona normalization.
-    beta↑ makes persona weights sharper (more distinct clusters).
-    """
-    x = np.array(x, dtype=float) * beta
-    x = x - np.max(x)
-    e = np.exp(x)
-    return e / (np.sum(e) + 1e-9)
-
-
 def compute_persona(DA, BH, TI, ENG, PU, SI, PS):
-    """
-    Layer 2: Persona Mapping
-    (N,B,H) -> persona scores -> persona weights -> (C,V)
-
-    Returns:
-      dominant persona (string)
-      raw persona scores (dict)
-      persona weights (dict)
-      Commitment C
-      Volatility V
-    """
     N, B, H = compute_behaviorals(DA, BH, TI, ENG, PU, SI, PS)
 
-    H1_loyalist = 0.90 * N + 0.25 * B - 0.70 * H
-    H2_fan      = 0.95 * B + 0.15 * N - 0.45 * H
-    H3_switcher = 0.80 * H - 0.20 * B + 0.05 * N
-    H4_drifter  = 1.10 * H - 0.60 * N - 0.20 * B
+    alpha_1 = 0.60
+    alpha_2 = 0.75
+    alpha_3 = 0.60
+    alpha_4 = 0.60
+
+    Y1 = _clip01(
+        (1 - H)
+        * (alpha_1 * B + (1 - alpha_1) * N)
+    )
+
+    Y2 = _clip01(
+        (1 - H)
+        * (alpha_2 * B + (1 - alpha_2) * N)
+    )
+
+    Y3 = _clip01(
+        (alpha_3 * H + (1 - alpha_3) * N)
+        * (1 - B)
+    )
+
+    Y4 = _clip01(
+        H
+        * (alpha_4 * (1 - B) + (1 - alpha_4) * N)
+    )
 
     scores = {
-        "Loyalist": H1_loyalist,
-        "Fan": H2_fan,
-        "Switcher": H3_switcher,
-        "Drifter": H4_drifter
+        "Loyalist": Y1,
+        "Fan": Y2,
+        "Switcher": Y3,
+        "Drifter": Y4,
     }
 
-    order = ["Loyalist", "Fan", "Switcher", "Drifter"]
-    vec = [scores[k] for k in order]
+    total_score = sum(scores.values()) + 1e-9
+    weights = {k: float(v / total_score) for k, v in scores.items()}
+    dominant = max(scores, key=scores.get)
 
-    w_vec = _softmax(vec, beta=3.5)
-    weights = dict(zip(order, w_vec))
+    delta_C = 0.75
+    alpha_C = 0.60
 
-    # Commitment from positive personas
-    C_raw = 1.4 * weights["Loyalist"] + 1.0 * weights["Fan"]
-    # Volatility from unstable personas
-    V_raw = 1.3 * weights["Switcher"] + 1.5 * weights["Drifter"]
+    C_limiter = _clip01(delta_C * Y4 + (1 - delta_C) * Y3)
+    C_support = _clip01(alpha_C * Y1 + (1 - alpha_C) * Y2)
+    C = _clip01((1 - C_limiter) * C_support)
 
-    s = C_raw + V_raw + 1e-9
-    C = float(C_raw / s)
-    V = float(V_raw / s)
+    alpha_V = 0.50
+    delta_V = 0.67
 
-    dominant = max(weights, key=weights.get)
+    V_driver = _clip01(alpha_V * Y3 + (1 - alpha_V) * Y4)
+    V_reducer = _clip01(delta_V * Y1 + (1 - delta_V) * Y2)
+    V = _clip01(V_driver * (1 - V_reducer))
 
     return dominant, scores, weights, C, V
 
 
 def compute_forcing_term(DA, BH, TI, ENG, PU, SI, PS):
-    """
-    Layer 3: Forcing Term Dynamics (persona-driven)
-    Uses ONLY (C,V) from Layer 2.
-    """
     dt = 0.01
     t = 800
-
-    # parameters
-    alpha = 0.9
-    omega = 0.7
-    eta   = 0.9
+    eta = 0.90
 
     _, _, _, C, V = compute_persona(DA, BH, TI, ENG, PU, SI, PS)
+    S = _clip01(C * (1 - V))
 
     forcing = np.zeros(t)
-
-    # initial pressure: baseline + commitment boost - volatility penalty
-    forcing[0] = np.clip(0.15 + 0.5*C - 0.35*V, 0, 1)
+    forcing[0] = 0.50
 
     for k in range(1, t):
-        X = (alpha * C) + (1 - alpha) * V      # Upgrade Pressure
-        Y = omega * V                          # Hesitation Impact
-        S = X * (1 - Y)                        # Effective short-term signal
-
-        forcing[k] = forcing[k-1] + eta * (S - forcing[k-1]) * dt
+        forcing[k] = forcing[k - 1] + eta * (S - forcing[k - 1]) * dt
+        forcing[k] = _clip01(forcing[k])
 
     return float(forcing[-1])
 
 
-def classify_forcing_term(value: float) -> str:
-    """Map forcing term → upgrade intention segment."""
+def classify_forcing_term(value):
     value = round(value, 2)
+
     if value >= 0.70:
         return "Upgrade Soon"
-    elif value >= 0.30:
+    if value >= 0.30:
         return "Delay Upgrade"
-    else:
-        return "Churn Risk"
+    return "Churn Risk"
 
 
-# ACTION LAYER (CRM / BUSINESS RULES)
-def recommend_actions(persona: str, intention: str):
-    """
-    Simple rule-based action trigger.
-    Persona + Intention -> Recommended CRM actions.
-    """
+def recommend_actions(persona, intention):
     persona = (persona or "").strip()
     intention = (intention or "").strip()
 
-    # Default fallback
     actions = ["Send general follow-up message."]
 
     if persona == "Loyalist":
         if intention == "Upgrade Soon":
-            actions = [
-                "Send VIP upgrade offer.",
-                "Give small trade-in bonus."
-            ]
+            actions = ["Send priority upgrade offer.", "Give a small trade-in bonus."]
         elif intention == "Delay Upgrade":
-            actions = [
-                "Send reminder.",
-                "Offer a small accessory promotion."
-            ]
-        else:  # Churn Risk
-            actions = [
-                "Request feedback.",
-                "Send a loyalty thank-you coupon."
-            ]
+            actions = ["Send a reminder.", "Offer a small accessory promotion."]
+        else:
+            actions = ["Request feedback.", "Send a loyalty thank-you coupon."]
 
     elif persona == "Fan":
         if intention == "Upgrade Soon":
-            actions = [
-                "Promote a device bundle.",
-                "Highlight key feature improvements."
-            ]
+            actions = ["Promote a device bundle.", "Highlight key feature improvements."]
         elif intention == "Delay Upgrade":
-            actions = [
-                "Explain value of upgrading.",
-                "Offer a modest trade-in top-up."
-            ]
-        else:  # Churn Risk
-            actions = [
-                "Suggest a lower-priced model.",
-                "Reduce communication frequency."
-            ]
+            actions = ["Explain the value of upgrading.", "Offer a modest trade-in top-up."]
+        else:
+            actions = ["Suggest a lower-priced device.", "Reduce communication frequency."]
 
     elif persona == "Switcher":
         if intention == "Upgrade Soon":
-            actions = [
-                "Highlight ecosystem benefits.",
-                "Provide competitive trade-in value."
-            ]
+            actions = ["Highlight ecosystem benefits.", "Provide strong trade-in value."]
         elif intention == "Delay Upgrade":
-            actions = [
-                "Send comparison messaging.",
-                "Offer a limited-time trade-in promotion."
-            ]
-        else:  # Churn Risk
-            actions = [
-                "Send a win-back offer.",
-                "Highlight long-term device value."
-            ]
+            actions = ["Send comparison messaging.", "Offer a limited-time trade-in promotion."]
+        else:
+            actions = ["Send a win-back offer.", "Highlight long-term device value."]
 
     elif persona == "Drifter":
         if intention == "Upgrade Soon":
-            actions = [
-                "Suggest mid-range or refurbished devices.",
-                "Keep communication simple."
-            ]
+            actions = ["Suggest mid-range or refurbished devices.", "Keep communication simple."]
         elif intention == "Delay Upgrade":
-            actions = [
-                "Send occasional generic promotion.",
-                "Suggest older or budget models."
-            ]
-        else:  # Churn Risk
-            actions = [
-                "Send a final discount offer.",
-                "Limit further marketing spend for this user."
-            ]
+            actions = ["Send an occasional generic promotion.", "Suggest older or budget devices."]
+        else:
+            actions = ["Send a final discount offer.", "Limit further marketing spend for this customer."]
 
     return actions
-
-# DATA LOADING
-@st.cache_data
-def load_data_from_firestore():
-    
-    # API call → reads all documents in the collection
-
-    docs = list(db.collection(TARGET_COLLECTION).stream())
-    rows = []
-    for doc in docs:
-        d = doc.to_dict()
-        intention_val = d.get("intention", d.get("decision"))
-        rows.append({
-            "id": d.get("source_id", doc.id),
-            "DA": d.get("DA"),
-            "BH": d.get("BH"),
-            "TI": d.get("TI"),
-            "ENG": d.get("ENG"),
-            "PU": d.get("PU"),
-            "SI": d.get("SI"),
-            "PS": d.get("PS"),
-            "forcing_term": d.get("forcing_term"),
-            "intention": intention_val,
-            "created_at": d.get("created_at"),
-            "crm_actions": d.get("crm_actions"),
-        })
-
-    if not rows:
+def build_scored_dataframe(raw_df):
+    if raw_df.empty:
         return pd.DataFrame()
 
-    df = pd.DataFrame(rows)
-    df["forcing_term"] = pd.to_numeric(df["forcing_term"], errors="coerce")
-    df = df.dropna(subset=["forcing_term"])
+    df = raw_df.copy()
 
-    personas, score_list, Ns, Bs, Hs, actions_col = [], [], [], [], [], []
+    if "id" not in df.columns:
+        df["id"] = [f"C{i + 1:04d}" for i in range(len(df))]
+
+    for col in INPUT_COLS:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df = df.dropna(subset=INPUT_COLS).copy()
+
+    personas = []
+    score_list = []
+    weight_list = []
+    intentions = []
+    forcing_terms = []
+    Ns = []
+    Bs = []
+    Hs = []
+    Cs = []
+    Vs = []
+    Ss = []
+    actions_col = []
+
     for _, r in df.iterrows():
-        p, scores, _, _, _ = compute_persona(
-            r.DA, r.BH, r.TI, r.ENG, r.PU, r.SI, r.PS
-        )
-        personas.append(p)
-        score_list.append(scores)
+        DA, BH, TI, ENG, PU, SI, PS = map(float, [r.DA, r.BH, r.TI, r.ENG, r.PU, r.SI, r.PS])
 
-        N, B, H = compute_behaviorals(
-            r.DA, r.BH, r.TI, r.ENG, r.PU, r.SI, r.PS
-        )
+        persona, scores, weights, C, V = compute_persona(DA, BH, TI, ENG, PU, SI, PS)
+        N, B, H = compute_behaviorals(DA, BH, TI, ENG, PU, SI, PS)
+        S = _clip01(C * (1 - V))
+        ft = round(compute_forcing_term(DA, BH, TI, ENG, PU, SI, PS), 3)
+        intention = classify_forcing_term(ft)
+        crm_actions = recommend_actions(persona, intention)
+
+        personas.append(persona)
+        score_list.append(scores)
+        weight_list.append(weights)
+        intentions.append(intention)
+        forcing_terms.append(ft)
         Ns.append(N)
         Bs.append(B)
         Hs.append(H)
-
-        # if Firestore already has crm_actions, use them; else compute now
-        stored_actions = r.get("crm_actions") if isinstance(r, pd.Series) else None
-        if stored_actions:
-            actions_col.append(stored_actions)
-        else:
-            actions_col.append(recommend_actions(p, r.intention))
+        Cs.append(C)
+        Vs.append(V)
+        Ss.append(S)
+        actions_col.append(crm_actions)
 
     df["persona"] = personas
     df["persona_scores"] = score_list
+    df["persona_weights"] = weight_list
     df["Need"] = Ns
     df["Bonding"] = Bs
     df["Hesitation"] = Hs
+    df["Commitment"] = Cs
+    df["Volatility"] = Vs
+    df["ShortTermIntent"] = Ss
+    df["forcing_term"] = forcing_terms
+    df["long_term_upgrade_intent"] = forcing_terms
+    df["intention"] = intentions
+    df["decision"] = intentions
     df["crm_actions"] = actions_col
 
     return df
 
 
-#  UI STYLE
+@st.cache_data
+def load_source_csv():
+    return pd.read_csv(DATASET_PATH)
+
+
+@st.cache_data
+def load_data_from_firestore():
+    if db is None:
+        return pd.DataFrame()
+
+    docs = list(db.collection(TARGET_COLLECTION).stream())
+    rows = []
+
+    for doc in docs:
+        d = doc.to_dict()
+        rows.append(
+            {
+                "id": d.get("source_id", doc.id),
+                "DA": d.get("DA"),
+                "BH": d.get("BH"),
+                "TI": d.get("TI"),
+                "ENG": d.get("ENG"),
+                "PU": d.get("PU"),
+                "SI": d.get("SI"),
+                "PS": d.get("PS"),
+                "forcing_term": d.get("forcing_term"),
+                "long_term_upgrade_intent": d.get("long_term_upgrade_intent"),
+                "intention": d.get("intention", d.get("decision")),
+                "created_at": d.get("created_at"),
+                "crm_actions": d.get("crm_actions"),
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame()
+
+    return build_scored_dataframe(pd.DataFrame(rows))
+
+
+def save_results_to_firestore(scored_df):
+    if db is None:
+        return 0
+
+    saved = 0
+
+    for _, r in scored_df.iterrows():
+        out_doc = {
+            "DA": float(r["DA"]),
+            "BH": float(r["BH"]),
+            "TI": float(r["TI"]),
+            "ENG": float(r["ENG"]),
+            "PU": float(r["PU"]),
+            "SI": float(r["SI"]),
+            "PS": float(r["PS"]),
+            "Need": float(r["Need"]),
+            "Bonding": float(r["Bonding"]),
+            "Hesitation": float(r["Hesitation"]),
+            "Commitment": float(r["Commitment"]),
+            "Volatility": float(r["Volatility"]),
+            "ShortTermIntent": float(r["ShortTermIntent"]),
+            "forcing_term": float(r["forcing_term"]),
+            "long_term_upgrade_intent": float(r["long_term_upgrade_intent"]),
+            "intention": r["intention"],
+            "decision": r["decision"],
+            "persona": r["persona"],
+            "persona_scores": r["persona_scores"],
+            "persona_weights": r["persona_weights"],
+            "crm_actions": r["crm_actions"],
+            "source_id": str(r["id"]),
+            "created_at": firestore.SERVER_TIMESTAMP,
+        }
+
+        db.collection(TARGET_COLLECTION).document(str(r["id"])).set(out_doc)
+        saved += 1
+
+    return saved
+
+
+def get_active_dataframe():
+    firestore_df = load_data_from_firestore()
+    if not firestore_df.empty:
+        return firestore_df, "firestore"
+
+    source_df = load_source_csv()
+    return build_scored_dataframe(source_df), "csv"
+
+
+def radar_chart(scores_dict, title="Persona Radar"):
+    labels = list(scores_dict.keys())
+    values = list(scores_dict.values())
+    values += values[:1]
+
+    angles = np.linspace(0, 2 * np.pi, len(labels), endpoint=False).tolist()
+    angles += angles[:1]
+
+    fig = plt.figure(figsize=(5, 5))
+    ax = plt.subplot(111, polar=True)
+    ax.plot(angles, values, linewidth=2)
+    ax.fill(angles, values, alpha=0.25)
+    ax.set_thetagrids(np.degrees(angles[:-1]), labels)
+    ax.set_title(title, y=1.1)
+    ax.grid(True)
+    return fig
+
+
 st.markdown(
     """
     <style>
@@ -297,125 +387,108 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# MAIN APP
-st.title("Apple Upgrade Prediction Dashboard")
+st.title("Customer Device Upgrade Intent Dashboard")
 
 with st.sidebar:
-    st.markdown("### Data controls")
-    if st.button("Refresh data from Firestore"):
+    st.markdown("### Data Controls")
+
+    if st.button("Refresh data"):
         load_data_from_firestore.clear()
+        load_source_csv.clear()
         st.rerun()
 
-df = load_data_from_firestore()
+    if db is None:
+        st.info("Firestore is not configured. The dashboard is using the local simulated CSV dataset.")
+    else:
+        st.success("Firestore is configured. Stored predictions will be loaded when available.")
 
-tabs = st.tabs([
-    "Overview",
-    "Persona Insights",
-    "CRM Planner",
-    "User Explorer",
-    "Data Loader"
-])
+df, data_source = get_active_dataframe()
+
+tabs = st.tabs(
+    ["Overview", "Persona Insights", "CRM Planner", "Customer Explorer", "Data Loader"]
+)
+
 tab_overview, tab_persona, tab_crm, tab_user, tab_loader = tabs
 
-
-# TAB 5: DATA LOADER 
 with tab_loader:
-    st.subheader("Import CSV and Save to Firestore")
-    uploaded = st.file_uploader("Upload CSV file", type=["csv"])
+    st.subheader("Load Dataset")
+    st.write(f"Default dataset: `{DATASET_PATH}`")
 
-    if uploaded:
-        raw_df = pd.read_csv(uploaded)
+    uploaded = st.file_uploader("Upload replacement CSV", type=["csv"])
+
+    preview_df = None
+    if uploaded is not None:
+        preview_df = pd.read_csv(uploaded)
+    elif data_source == "csv":
+        preview_df = load_source_csv()
+
+    if preview_df is not None:
         st.write("Preview:")
-        st.dataframe(raw_df.head())
+        st.dataframe(preview_df.head(), use_container_width=True)
 
-        required_cols = ["id", "DA", "BH", "TI", "ENG", "PU", "SI", "PS"]
-        missing = [c for c in required_cols if c not in raw_df.columns]
+    if uploaded is not None:
+        missing = [c for c in ["id"] + INPUT_COLS if c not in preview_df.columns]
 
         if missing:
             st.error(f"Missing required columns: {missing}")
-        else:
-            if st.button("Compute and save"):
-                ok = 0
-                with st.spinner("Computing and saving documents..."):
-                    for _, r in raw_df.iterrows():
-                        try:
-                            user_id = str(r["id"])
-                            DA, BH, TI, ENG, PU, SI, PS = map(
-                                float, [r.DA, r.BH, r.TI, r.ENG, r.PU, r.SI, r.PS]
-                            )
+        elif st.button("Compute results and save"):
+            scored_df = build_scored_dataframe(preview_df)
+            scored_df[["id"] + INPUT_COLS].to_csv(DATASET_PATH, index=False)
+            load_source_csv.clear()
 
-                            ft_raw = compute_forcing_term(DA, BH, TI, ENG, PU, SI, PS)
-                            ft = round(ft_raw, 3)
-                            intention = classify_forcing_term(ft)
-
-                            dominant, scores, _, _, _ = compute_persona(
-                                DA, BH, TI, ENG, PU, SI, PS
-                            )
-
-                            crm_actions = recommend_actions(dominant, intention)
-
-                            out_doc = {
-                                "DA": DA, "BH": BH, "TI": TI, "ENG": ENG,
-                                "PU": PU, "SI": SI, "PS": PS,
-                                "forcing_term": ft,
-                                "intention": intention,
-                                "decision": intention,  # legacy alias (optional)
-                                "persona": dominant,
-                                "persona_scores": scores,
-                                "crm_actions": crm_actions,
-                                "source_id": user_id,
-                                "created_at": firestore.SERVER_TIMESTAMP,
-                            }
-
-                            db.collection(TARGET_COLLECTION).document(user_id).set(out_doc)
-                            ok += 1
-                        except Exception as e:
-                            st.warning(f"Skipped row {r.get('id','?')} due to {e}")
-
+            saved = 0
+            if db is not None:
+                with st.spinner("Saving computed results..."):
+                    saved = save_results_to_firestore(scored_df)
                 load_data_from_firestore.clear()
-                st.success(f"Saved {ok} users to Firestore.")
-                st.info("Use the other tabs to review the results.")
-    else:
-        st.info("Upload a CSV file to compute and save results.")
 
+            st.success(f"Processed {len(scored_df)} customer records.")
+            if db is not None:
+                st.info(f"Saved {saved} prediction records to Firestore.")
+            else:
+                st.info("Saved the uploaded simulated dataset locally and refreshed the dashboard.")
+            st.rerun()
+    else:
+        st.info("Upload a CSV to replace the local simulated dataset and recompute the results.")
 
 if df.empty:
     with tab_overview:
-        st.warning("No computed documents found. Use the Data Loader tab to upload and process a CSV file.")
-    with tab_persona:
-        st.info("Persona insights will be available after data is loaded.")
-    with tab_user:
-        st.info("User Explorer will be available after data is loaded.")
-    with tab_crm:
-        st.info("CRM Planner will be available after data is loaded.")
-    st.stop()
+        st.warning("No records are available. Add a simulated dataset in the Data Loader tab.")
 
+    with tab_persona:
+        st.info("Persona insights will appear after data is loaded.")
+
+    with tab_user:
+        st.info("Customer Explorer will appear after data is loaded.")
+
+    with tab_crm:
+        st.info("CRM Planner will appear after data is loaded.")
+
+    st.stop()
 
 st.sidebar.markdown("### Filters")
 
-intention_options = ["Upgrade Soon", "Delay Upgrade", "Churn Risk"]
 selected_intentions = st.sidebar.multiselect(
-    "Output Prediction",
-    intention_options,
-    default=intention_options
+    "Predicted outcome",
+    INTENTION_OPTIONS,
+    default=INTENTION_OPTIONS,
 )
 
-persona_options = ["Loyalist", "Fan", "Switcher", "Drifter"]
 selected_personas = st.sidebar.multiselect(
     "Persona type",
-    persona_options,
-    default=persona_options
+    PERSONA_OPTIONS,
+    default=PERSONA_OPTIONS,
 )
 
 forcing_min_val = float(df["forcing_term"].min())
 forcing_max_val = float(df["forcing_term"].max())
 
 forcing_min, forcing_max = st.sidebar.slider(
-    "Forcing term range",
+    "Long-term upgrade intent range",
     forcing_min_val,
     forcing_max_val,
     (forcing_min_val, forcing_max_val),
-    step=0.05
+    step=0.05,
 )
 
 filtered_df = df[
@@ -425,61 +498,60 @@ filtered_df = df[
     & (df["forcing_term"] <= forcing_max)
 ].copy()
 
-
-total_users = len(filtered_df)
-avg_forcing = filtered_df["forcing_term"].mean() if total_users else 0
+total_customers = len(filtered_df)
+avg_forcing = filtered_df["forcing_term"].mean() if total_customers else 0
 
 upgrade_count = int((filtered_df["intention"] == "Upgrade Soon").sum())
-delay_count   = int((filtered_df["intention"] == "Delay Upgrade").sum())
-churn_count   = int((filtered_df["intention"] == "Churn Risk").sum())
+delay_count = int((filtered_df["intention"] == "Delay Upgrade").sum())
+churn_count = int((filtered_df["intention"] == "Churn Risk").sum())
 
-upgrade_rate = upgrade_count / total_users * 100 if total_users else 0
-delay_rate   = delay_count / total_users * 100 if total_users else 0
-churn_rate   = churn_count / total_users * 100 if total_users else 0
+upgrade_rate = upgrade_count / total_customers * 100 if total_customers else 0
+delay_rate = delay_count / total_customers * 100 if total_customers else 0
+churn_rate = churn_count / total_customers * 100 if total_customers else 0
 
 c1, c2, c3, c4 = st.columns(4)
+
 with c1:
-    st.metric("Users (filtered)", f"{total_users}")
+    st.metric("Customers (filtered)", f"{total_customers}")
+
 with c2:
     st.metric("Upgrade Soon", f"{upgrade_count} ({upgrade_rate:.1f}%)")
+
 with c3:
     st.metric("Delay Upgrade", f"{delay_count} ({delay_rate:.1f}%)")
+
 with c4:
     st.metric("Churn Risk", f"{churn_count} ({churn_rate:.1f}%)")
 
-st.markdown(f"**Average forcing term:** `{avg_forcing:.3f}`")
+st.markdown(f"**Average long-term upgrade intent:** `{avg_forcing:.3f}`")
 st.markdown("---")
 
-
-
-#  TAB 1: OVERVIEW 
 with tab_overview:
-    st.subheader("Forcing Term and Prediction Overview")
+    st.subheader("Upgrade Intent Overview")
 
     c1, c2 = st.columns([2, 1])
 
-    # -------- Left: Forcing term distribution (histogram) --------
     with c1:
-        st.markdown("**Forcing term distribution**")
+        st.markdown("**Long-term upgrade intent distribution**")
+
         if not filtered_df.empty:
             arr = filtered_df["forcing_term"].to_numpy()
             fig_hist, ax_hist = plt.subplots()
             ax_hist.hist(arr, bins=10, edgecolor="black")
-            ax_hist.set_xlabel("Forcing term")
-            ax_hist.set_ylabel("Number of users")
+            ax_hist.set_xlabel("Long-term upgrade intent")
+            ax_hist.set_ylabel("Number of customers")
             st.pyplot(fig_hist)
         else:
-            st.info("No forcing term values for the current filter.")
+            st.info("No long-term upgrade intent values for the current filter.")
 
-    # -------- Right: Intention breakdown pie --------
     with c2:
         st.markdown("**Prediction breakdown**")
+
         if not filtered_df.empty:
             intention_counts = (
-                filtered_df["intention"]
-                .value_counts()
-                .reindex(intention_options, fill_value=0)
+                filtered_df["intention"].value_counts().reindex(INTENTION_OPTIONS, fill_value=0)
             )
+
             fig, ax = plt.subplots()
             ax.pie(
                 intention_counts.values,
@@ -490,14 +562,13 @@ with tab_overview:
             ax.axis("equal")
             st.pyplot(fig)
         else:
-            st.info("No intention data for the current filter.")
+            st.info("No prediction data for the current filter.")
 
-
-#  TAB 2: PERSONA INSIGHTS 
 with tab_persona:
     st.subheader("Persona Insights")
 
-    p_counts = filtered_df["persona"].value_counts().reindex(persona_options, fill_value=0)
+    p_counts = filtered_df["persona"].value_counts().reindex(PERSONA_OPTIONS, fill_value=0)
+
     c1, c2 = st.columns([1.2, 2])
 
     with c1:
@@ -508,27 +579,31 @@ with tab_persona:
         st.pyplot(figp)
 
     with c2:
-        st.markdown("**Average forcing term by persona**")
+        st.markdown("**Average long-term upgrade intent by persona**")
         persona_means = filtered_df.groupby("persona")[["forcing_term"]].mean()
-        persona_means = persona_means.reindex(persona_options)
+        persona_means = persona_means.reindex(PERSONA_OPTIONS)
         st.bar_chart(persona_means, use_container_width=True)
 
-    with st.expander("Behavioral profile by persona (Need / Bonding / Hesitation)"):
+    with st.expander("Behavioral profile by persona"):
         if not filtered_df.empty:
-            beh_means = filtered_df.groupby("persona")[["Need", "Bonding", "Hesitation"]].mean()
-            beh_means = beh_means.reindex(persona_options)
+            beh_means = filtered_df.groupby("persona")[
+                ["Need", "Bonding", "Hesitation", "Commitment", "Volatility"]
+            ].mean()
+            beh_means = beh_means.reindex(PERSONA_OPTIONS)
             st.bar_chart(beh_means, use_container_width=True)
-            st.caption("Higher Need and Bonding are linked to upgrades; higher Hesitation is linked to delay or churn.")
+            st.caption(
+                "Higher Need, Bonding, and Commitment support upgrade intent. "
+                "Higher Hesitation and Volatility reduce upgrade intent."
+            )
         else:
             st.info("No data available to show behavioral profiles.")
 
-
-# TAB 3: CRM PLANNER ==
 with tab_crm:
     st.subheader("CRM Planner")
 
     if "crm_actions" in filtered_df.columns and not filtered_df.empty:
         all_actions = []
+
         for actions in filtered_df["crm_actions"]:
             if isinstance(actions, (list, tuple)):
                 all_actions.extend(actions)
@@ -540,18 +615,13 @@ with tab_crm:
             action_counts = action_series.value_counts().sort_values(ascending=False)
 
             st.markdown("### CRM actions in this segment")
-
             st.dataframe(
                 action_counts.rename("Count").to_frame(),
                 use_container_width=True,
             )
 
-            #  Horizontal Bar Chart 
-            import textwrap
-
-            top_n = min(8, len(action_counts))  
-            subset = action_counts.head(top_n)[::-1]  
-
+            top_n = min(8, len(action_counts))
+            subset = action_counts.head(top_n)[::-1]
             wrapped_labels = [textwrap.fill(lbl, width=30) for lbl in subset.index]
 
             fig_act, ax_act = plt.subplots(figsize=(10, 6))
@@ -561,86 +631,78 @@ with tab_crm:
             ax_act.set_xlabel("Count")
             ax_act.set_title("Top CRM actions")
             ax_act.grid(axis="x", linestyle="--", alpha=0.4)
-
             plt.tight_layout()
             st.pyplot(fig_act)
 
             st.markdown("### Export segment")
             export_df = filtered_df[["id", "persona", "intention", "crm_actions"]].copy()
             csv = export_df.to_csv(index=False).encode("utf-8")
+
             st.download_button(
                 "Download CSV",
                 data=csv,
                 file_name="crm_segment_export.csv",
                 mime="text/csv",
             )
-
         else:
             st.info("This segment currently has no CRM actions.")
     else:
         st.info("No CRM action data available. Load and compute data first.")
 
-
-#  TAB 4: USER EXPLORER 
-def radar_chart(scores_dict, title="Persona Radar"):
-    labels = list(scores_dict.keys())
-    values = list(scores_dict.values())
-
-    values += values[:1]
-    angles = np.linspace(0, 2*np.pi, len(labels), endpoint=False).tolist()
-    angles += angles[:1]
-
-    fig = plt.figure(figsize=(5,5))
-    ax = plt.subplot(111, polar=True)
-    ax.plot(angles, values, linewidth=2)
-    ax.fill(angles, values, alpha=0.25)
-    ax.set_thetagrids(np.degrees(angles[:-1]), labels)
-    ax.set_title(title, y=1.1)
-    ax.grid(True)
-    return fig
-
 with tab_user:
-    st.subheader("User Explorer")
+    st.subheader("Customer Explorer")
 
-    selected_user_id = st.selectbox(
-        "Select user ID",
-        options=filtered_df["id"].tolist()
+    selected_customer_id = st.selectbox(
+        "Select customer ID",
+        options=filtered_df["id"].tolist(),
     )
 
-    user_row = filtered_df[filtered_df["id"] == selected_user_id].iloc[0]
-    persona = user_row["persona"]
-    scores  = user_row["persona_scores"]
-    intention = user_row["intention"]
+    customer_row = filtered_df[filtered_df["id"] == selected_customer_id].iloc[0]
+    persona = customer_row["persona"]
+    scores = customer_row["persona_scores"]
+    intention = customer_row["intention"]
 
     left, right = st.columns([1, 1.2])
 
     with left:
-        st.markdown("**User summary**")
-        st.markdown(f"- User ID: `{selected_user_id}`")
-        st.markdown(f"- Intention: {intention}")
-        st.markdown(f"- Forcing term: `{user_row['forcing_term']:.3f}`")
+        st.markdown("**Customer summary**")
+        st.markdown(f"- Customer ID: `{selected_customer_id}`")
+        st.markdown(f"- Predicted outcome: {intention}")
+        st.markdown(f"- Long-term upgrade intent: `{customer_row['forcing_term']:.3f}`")
         st.markdown(f"- Persona: **{persona}**")
 
-        beh_df = pd.DataFrame({
-            "Factor": ["Need", "Bonding", "Hesitation"],
-            "Value": [user_row["Need"], user_row["Bonding"], user_row["Hesitation"]]
-        })
-        st.markdown("**Behavioral factors**")
-        st.bar_chart(beh_df, x="Factor", y="Value", use_container_width=True)
+        st.markdown("**Model factors**")
+        factor_df = pd.DataFrame(
+            {
+                "Factor": [
+                    "Need",
+                    "Bonding",
+                    "Hesitation",
+                    "Commitment",
+                    "Volatility",
+                    "Short-Term Intent",
+                ],
+                "Value": [
+                    customer_row["Need"],
+                    customer_row["Bonding"],
+                    customer_row["Hesitation"],
+                    customer_row["Commitment"],
+                    customer_row["Volatility"],
+                    customer_row["ShortTermIntent"],
+                ],
+            }
+        )
+
+        st.bar_chart(factor_df, x="Factor", y="Value", use_container_width=True)
 
         st.markdown("---")
         st.markdown("**Recommended CRM actions**")
 
-        stored_actions = user_row.get("crm_actions")
-        if stored_actions:
-            action_list = stored_actions
-        else:
-            action_list = recommend_actions(persona, intention)
-
-        for a in action_list:
-            st.markdown(f"- {a}")
+        action_list = customer_row.get("crm_actions") or recommend_actions(persona, intention)
+        for action in action_list:
+            st.markdown(f"- {action}")
 
     with right:
-        st.markdown("**Persona radar (H1–H4)**")
+        st.markdown("**Persona radar**")
         fig = radar_chart(scores, title=f"{persona} profile")
         st.pyplot(fig)
